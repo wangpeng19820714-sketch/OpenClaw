@@ -39,6 +39,12 @@
         "model": {
           "primary": "google-gemini-cli/gemini-3-pro-preview"
         }
+      },
+      {
+        "id": "ba",
+        "model": {
+          "primary": "google-gemini-cli/gemini-3-pro-preview"
+        }
       }
     ]
   },
@@ -87,6 +93,10 @@
       "requireMention": false,
       "defaultAccount": "bot_main",
       "accounts": {
+        "bot_main": {
+          "appId": "${FEISHU_MAIN_APP_ID}",
+          "appSecret": "${FEISHU_MAIN_APP_SECRET}"
+        },
         "bot_client": {
           "appId": "${FEISHU_CLIENT_APP_ID}",
           "appSecret": "${FEISHU_CLIENT_APP_SECRET}"
@@ -98,11 +108,23 @@
           "enabled": true,
           "appId": "${FEISHU_PM_APP_ID}",
           "appSecret": "${FEISHU_PM_APP_SECRET}"
+        },
+        "bot_ba": {
+          "enabled": true,
+          "appId": "${FEISHU_BA_APP_ID}",
+          "appSecret": "${FEISHU_BA_APP_SECRET}"
         }
       }
     }
   },
   "bindings": [
+    {
+      "agentId": "main",
+      "match": {
+        "channel": "feishu",
+        "accountId": "bot_main"
+      }
+    },
     {
       "agentId": "client",
       "match": {
@@ -122,6 +144,13 @@
       "match": {
         "channel": "feishu",
         "accountId": "bot_pm"
+      }
+    },
+      {
+      "agentId": "ba",
+      "match": {
+        "channel": "feishu",
+        "accountId": "bot_ba"
       }
     }
   ]
