@@ -195,6 +195,22 @@ if errorlevel 1 (
 )
 exit /b 0
 
+:run_soft
+set "RUN_DESC=%~1"
+shift
+call :log "%RUN_DESC%"
+if "%~1"=="" (
+  call :log "Skip (no command): %RUN_DESC%"
+  exit /b 0
+)
+call :log "Command executable: %~1"
+call %1 %2 %3 %4 %5 %6 %7 %8 %9 >> "%BOOTSTRAP_LOG_FILE%" 2>&1
+if errorlevel 1 (
+  call :log "Skip (non-fatal): %RUN_DESC%"
+  exit /b 0
+)
+exit /b 0
+
 :require_node_and_npm
 where node >nul 2>&1 || (
   call :die "node is required (Node ^>= %REQUIRED_NODE_MAJOR%)."
@@ -333,6 +349,15 @@ call :run_quiet "Setting gateway.mode=local" "%OPENCLAW_BIN%" config set gateway
 call :run_quiet "Setting gateway.port=%GATEWAY_PORT%" "%OPENCLAW_BIN%" config set gateway.port %GATEWAY_PORT% || exit /b 1
 exit /b 0
 
+:disable_local_plugins
+if /I "%OPENCLAW_KEEP_LOCAL_PLUGINS%"=="1" (
+  call :log "Keeping local plugins per OPENCLAW_KEEP_LOCAL_PLUGINS=1."
+  exit /b 0
+)
+call :run_soft "Clearing local plugin paths" "%OPENCLAW_BIN%" config unset plugins.load.paths
+call :run_soft "Clearing local plugin installs" "%OPENCLAW_BIN%" config unset plugins.installs
+exit /b 0
+
 :install_gateway_daemon
 call :run_quiet "Installing gateway daemon (port %GATEWAY_PORT%)" "%OPENCLAW_BIN%" gateway install --force --port %GATEWAY_PORT% || exit /b 1
 exit /b 0
@@ -370,6 +395,7 @@ call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :ensure_openclaw_installed || exit /b 1
 call :sync_env_to_state_dir || exit /b 1
+call :disable_local_plugins || exit /b 1
 call :configure_gateway_defaults || exit /b 1
 call :install_gateway_daemon || exit /b 1
 call :run_quiet "Stopping gateway service after deploy" "%OPENCLAW_BIN%" gateway stop || exit /b 1
@@ -384,6 +410,7 @@ call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :ensure_openclaw_installed || exit /b 1
 call :sync_env_to_state_dir || exit /b 1
+call :disable_local_plugins || exit /b 1
 call :run_quiet "Starting gateway service" "%OPENCLAW_BIN%" gateway start || exit /b 1
 call :wait_for_health 15 2
 if errorlevel 1 (
@@ -409,6 +436,7 @@ call :refresh_runtime_paths_
 call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :ensure_openclaw_installed || exit /b 1
+call :disable_local_plugins || exit /b 1
 
 call "%OPENCLAW_BIN%" gateway status
 if errorlevel 1 call :log "gateway status returned non-zero."
@@ -426,6 +454,7 @@ call :refresh_runtime_paths_
 call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :ensure_openclaw_installed || exit /b 1
+call :disable_local_plugins || exit /b 1
 call :health_check 8000
 exit /b %ERRORLEVEL%
 
@@ -516,6 +545,7 @@ call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :update_openclaw || exit /b 1
 call :sync_env_to_state_dir || exit /b 1
+call :disable_local_plugins || exit /b 1
 call :configure_gateway_defaults || exit /b 1
 call :install_gateway_daemon || exit /b 1
 call :run_quiet "Stopping gateway service after update" "%OPENCLAW_BIN%" gateway stop || exit /b 1

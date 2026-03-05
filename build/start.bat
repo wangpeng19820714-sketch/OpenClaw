@@ -24,10 +24,17 @@ if errorlevel 1 (
   exit /b 1
 )
 
-pnpm run start:server
-if not errorlevel 1 goto done
+if not exist "%REPO_ROOT%\\node_modules" (
+  echo [start.bat] node_modules missing; running pnpm install first.
+  pnpm install
+  if errorlevel 1 (
+    echo [start.bat] ERROR: pnpm install failed.
+    popd >nul
+    exit /b 1
+  )
+)
 
-echo [start.bat] pnpm run start:server failed; retrying with Windows-compatible env syntax.
+echo [start.bat] Starting gateway with Windows-compatible env syntax.
 set "OPENCLAW_CONFIG_PATH=configs/openclaw.json"
 node scripts/run-node.mjs gateway --port 18789
 
