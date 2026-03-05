@@ -59,11 +59,16 @@ if defined OPENCLAW_GATEWAY_PORT (
   set "GATEWAY_PORT=%DEFAULT_PORT%"
 )
 
-call :refresh_runtime_paths
+call :main %*
+exit /b %ERRORLEVEL%
+
+:main
+call :refresh_runtime_paths_
 call :ensure_log_dir || exit /b 1
 
 set "COMMAND=%~1"
 if not defined COMMAND set "COMMAND=deploy"
+call :log "COMMAND=%COMMAND%"
 
 if /I "%COMMAND%"=="deploy" (
   call :cmd_deploy
@@ -112,10 +117,10 @@ call :die "Unknown command: %COMMAND%"
 exit /b 1
 
 :now
-for /f "delims=" %%I in ('powershell -NoProfile -Command "Get-Date -Format ''yyyy-MM-dd HH:mm:ss''"') do set "NOW_TS=%%I"
+for /f "delims=" %%I in ('powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'"') do set "NOW_TS=%%I"
 exit /b 0
 
-:refresh_runtime_paths
+:refresh_runtime_paths_
 if defined OPENCLAW_STATE_DIR (
   set "STATE_DIR=%OPENCLAW_STATE_DIR%"
 ) else (
@@ -176,10 +181,15 @@ exit /b 1
 set "RUN_DESC=%~1"
 shift
 call :log "%RUN_DESC%"
-call %* >> "%BOOTSTRAP_LOG_FILE%" 2>&1
+if "%~1"=="" (
+  call :die "No command provided for: %RUN_DESC%"
+  exit /b 1
+)
+call :log "Command executable: %~1"
+call %1 %2 %3 %4 %5 %6 %7 %8 %9 >> "%BOOTSTRAP_LOG_FILE%" 2>&1
 if errorlevel 1 (
   call :log "Command failed. Recent bootstrap log:"
-  powershell -NoProfile -Command "if (Test-Path '%BOOTSTRAP_LOG_FILE%') { Get-Content -Path '%BOOTSTRAP_LOG_FILE%' -Tail 40 }" 2>nul
+  powershell -NoProfile -Command "if ^(Test-Path '%BOOTSTRAP_LOG_FILE%'^) { Get-Content -Path '%BOOTSTRAP_LOG_FILE%' -Tail 40 }" 2>nul
   call :die "%RUN_DESC% failed"
   exit /b 1
 )
@@ -236,15 +246,30 @@ set "%ENV_KEY%=%ENV_VALUE%"
 exit /b 0
 
 :load_env_file
-if exist "%ENV_FILE%" (
-  for /f "usebackq delims=" %%L in ("%ENV_FILE%") do call :set_env_line "%%L"
-  call :log "Loaded environment from %ENV_FILE%"
-) else (
-  call :log "No .env found at %ENV_FILE%; continuing with current environment."
-)
-call :refresh_runtime_paths
+if not exist "%ENV_FILE%" goto load_env_file_missing
+
+set "ENV_TMP=%TEMP%\openclaw-env-%RANDOM%%RANDOM%.cmd"
+powershell -NoProfile -Command "$path = $env:ENV_FILE; $out = $env:ENV_TMP; $lines = Get-Content -LiteralPath $path; $outLines = New-Object System.Collections.Generic.List[string]; foreach ($raw in $lines) { $line = $raw.Trim(); if (-not $line) { continue }; if ($line.StartsWith('#')) { continue }; $eq = $line.IndexOf('='); if ($eq -lt 1) { continue }; $key = $line.Substring(0, $eq).Trim(); $val = $line.Substring($eq + 1).Trim(); if ($val.Length -ge 2) { $first = $val[0]; $last = $val[$val.Length - 1]; if (($first -eq [char]34 -and $last -eq [char]34) -or ($first -eq [char]39 -and $last -eq [char]39)) { $val = $val.Substring(1, $val.Length - 2) } }; $val = $val -replace '\^','^^'; $val = $val -replace '%','%%'; $val = $val -replace '""','^""'; $outLines.Add('set ""' + $key + '=' + $val + '""') }; Set-Content -LiteralPath $out -Value $outLines -Encoding ASCII"
+if errorlevel 1 goto load_env_file_fail
+if not exist "%ENV_TMP%" goto load_env_file_fail
+
+call "%ENV_TMP%"
+del /f /q "%ENV_TMP%" >nul 2>&1
+
+call :log "Loaded environment from %ENV_FILE%"
+call :refresh_runtime_paths_
 call :ensure_log_dir || exit /b 1
 exit /b 0
+
+:load_env_file_missing
+call :log "No .env found at %ENV_FILE%; continuing with current environment."
+call :refresh_runtime_paths_
+call :ensure_log_dir || exit /b 1
+exit /b 0
+
+:load_env_file_fail
+call :die "Failed to parse .env via PowerShell"
+exit /b 1
 
 :sync_env_to_state_dir
 set "TARGET_ENV=%STATE_DIR%\.env"
@@ -282,20 +307,11 @@ call :extract_expected_version_from_spec
 
 call :resolve_openclaw_bin_path
 if not errorlevel 1 (
-  set "INSTALLED_VERSION="
-  for /f "delims=" %%V in ('"%OPENCLAW_BIN%" --version 2^>NUL') do set "INSTALLED_VERSION=%%V"
-  if not defined EXPECTED_VERSION (
-    call :log "OpenClaw CLI found at %OPENCLAW_BIN%."
-    exit /b 0
-  )
-  echo %INSTALLED_VERSION%| findstr /C:"%EXPECTED_VERSION%" >nul
-  if not errorlevel 1 (
-    call :log "OpenClaw CLI already matches version %EXPECTED_VERSION%."
-    exit /b 0
-  )
-  call :log "OpenClaw CLI version mismatch (have: %INSTALLED_VERSION%, want: %EXPECTED_VERSION%)."
+  call :log "OpenClaw CLI found at %OPENCLAW_BIN%."
+  exit /b 0
 )
 
+call :log "NPM_PREFIX=[%NPM_PREFIX%]"
   call :run_quiet "Installing %OPENCLAW_NPM_SPEC% into %NPM_PREFIX%" npm install -g --prefix "%NPM_PREFIX%" --omit=dev --no-audit --no-fund %OPENCLAW_NPM_SPEC% || exit /b 1
 call :resolve_openclaw_bin_path || (
   call :die "OpenClaw binary not found after install under %NPM_PREFIX%"
@@ -349,7 +365,7 @@ goto :wait_health_loop
 
 :cmd_deploy
 call :require_node_and_npm || exit /b 1
-call :refresh_runtime_paths
+call :refresh_runtime_paths_
 call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :ensure_openclaw_installed || exit /b 1
@@ -363,7 +379,7 @@ exit /b 0
 
 :cmd_start
 call :require_node_and_npm || exit /b 1
-call :refresh_runtime_paths
+call :refresh_runtime_paths_
 call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :ensure_openclaw_installed || exit /b 1
@@ -379,7 +395,7 @@ exit /b 0
 
 :cmd_stop
 call :require_node_and_npm || exit /b 1
-call :refresh_runtime_paths
+call :refresh_runtime_paths_
 call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :ensure_openclaw_installed || exit /b 1
@@ -389,7 +405,7 @@ exit /b 0
 
 :cmd_status
 call :require_node_and_npm || exit /b 1
-call :refresh_runtime_paths
+call :refresh_runtime_paths_
 call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :ensure_openclaw_installed || exit /b 1
@@ -406,7 +422,7 @@ exit /b 0
 
 :cmd_health
 call :require_node_and_npm || exit /b 1
-call :refresh_runtime_paths
+call :refresh_runtime_paths_
 call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :ensure_openclaw_installed || exit /b 1
@@ -414,7 +430,7 @@ call :health_check 8000
 exit /b %ERRORLEVEL%
 
 :cmd_logs
-call :refresh_runtime_paths
+call :refresh_runtime_paths_
 call :ensure_log_dir || exit /b 1
 
 set "LOG_TARGET=gateway"
@@ -495,7 +511,7 @@ exit /b %ERRORLEVEL%
 
 :cmd_update
 call :require_node_and_npm || exit /b 1
-call :refresh_runtime_paths
+call :refresh_runtime_paths_
 call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :update_openclaw || exit /b 1
