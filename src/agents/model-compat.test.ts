@@ -235,6 +235,12 @@ describe("normalizeModelCompat", () => {
 });
 
 describe("isModernModelRef", () => {
+  it("treats GPT-5.4 OpenAI and Codex refs as modern", () => {
+    expect(isModernModelRef({ provider: "openai", id: "gpt-5.4" })).toBe(true);
+    expect(isModernModelRef({ provider: "openai", id: "gpt-5.4-pro" })).toBe(true);
+    expect(isModernModelRef({ provider: "openai-codex", id: "gpt-5.4" })).toBe(true);
+  });
+
   it("excludes opencode minimax variants from modern selection", () => {
     expect(isModernModelRef({ provider: "opencode", id: "minimax-m2.5" })).toBe(false);
     expect(isModernModelRef({ provider: "opencode", id: "minimax-m2.5" })).toBe(false);

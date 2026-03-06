@@ -138,9 +138,22 @@ describe("resolveExtraParams", () => {
 
 describe("applyExtraParamsToAgent", () => {
   function createOptionsCaptureAgent() {
-    const calls: Array<(SimpleStreamOptions & { openaiWsWarmup?: boolean }) | undefined> = [];
+    const calls: Array<
+      | (SimpleStreamOptions & {
+          openaiWsWarmup?: boolean;
+          serviceTier?: "auto" | "default" | "flex" | "priority";
+        })
+      | undefined
+    > = [];
     const baseStreamFn: StreamFn = (_model, _context, options) => {
-      calls.push(options as (SimpleStreamOptions & { openaiWsWarmup?: boolean }) | undefined);
+      calls.push(
+        options as
+          | (SimpleStreamOptions & {
+              openaiWsWarmup?: boolean;
+              serviceTier?: "auto" | "default" | "flex" | "priority";
+            })
+          | undefined,
+      );
       return {} as ReturnType<StreamFn>;
     };
     return {
@@ -757,6 +770,66 @@ describe("applyExtraParamsToAgent", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.openaiWsWarmup).toBe(true);
+  });
+
+  it("passes configured serviceTier through stream options", () => {
+    const { calls, agent } = createOptionsCaptureAgent();
+    const cfg = {
+      agents: {
+        defaults: {
+          models: {
+            "openai/gpt-5.4": {
+              params: {
+                serviceTier: "priority",
+              },
+            },
+          },
+        },
+      },
+    };
+
+    applyExtraParamsToAgent(agent, cfg, "openai", "gpt-5.4");
+
+    const model = {
+      api: "openai-responses",
+      provider: "openai",
+      id: "gpt-5.4",
+    } as Model<"openai-responses">;
+    const context: Context = { messages: [] };
+    void agent.streamFn?.(model, context, {});
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.serviceTier).toBe("priority");
+  });
+
+  it("ignores invalid configured serviceTier values", () => {
+    const { calls, agent } = createOptionsCaptureAgent();
+    const cfg = {
+      agents: {
+        defaults: {
+          models: {
+            "openai/gpt-5.4": {
+              params: {
+                serviceTier: "turbo",
+              },
+            },
+          },
+        },
+      },
+    };
+
+    applyExtraParamsToAgent(agent, cfg, "openai", "gpt-5.4");
+
+    const model = {
+      api: "openai-responses",
+      provider: "openai",
+      id: "gpt-5.4",
+    } as Model<"openai-responses">;
+    const context: Context = { messages: [] };
+    void agent.streamFn?.(model, context, {});
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.serviceTier).toBeUndefined();
   });
 
   it("allows forcing Codex transport to SSE", () => {

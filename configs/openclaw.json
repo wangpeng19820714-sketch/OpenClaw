@@ -1,82 +1,7 @@
 {
-  "gateway": {
-    "mode": "local",
-    "port": 18789,
-    "auth": {
-      "mode": "token",
-      "token": "${OPENCLAW_GATEWAY_TOKEN}"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "workspace": "~/.openclaw/workspace",
-      "model": {
-        "primary": "openai-codex/gpt-5.3-codex",
-        "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
-      }
-    },
-    "list": [
-      {
-        "id": "main",
-        "workspace": "~/.openclaw/workspace/main",
-        "default": true,
-        "model": {
-          "primary": "openai-codex/gpt-5.3-codex",
-          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
-        },
-        "tools": {
-          "allow": [],
-          "deny": []
-        }
-      },
-      {
-        "id": "client",
-        "workspace": "~/.openclaw/workspace/client",
-        "default": true,
-        "model": {
-          "primary": "openai-codex/gpt-5.3-codex",
-          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
-        },
-        "tools": {
-          "allow": [],
-          "deny": []
-        }
-      },
-      {
-        "id": "server",
-        "workspace": "~/.openclaw/workspace/server",
-        "model": {
-          "primary": "openai-codex/gpt-5.3-codex",
-          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
-        },
-        "tools": {
-          "allow": [],
-          "deny": []
-        }
-      },
-      {
-        "id": "pm",
-        "workspace": "~/.openclaw/workspace/pm",
-        "model": {
-          "primary": "google-gemini-cli/gemini-3-pro-preview"
-        },
-        "tools": {
-          "allow": [],
-          "deny": []
-        }
-      },
-      {
-        "id": "ba",
-        "workspace": "~/.openclaw/workspace/ba",
-        "model": {
-          "primary": "google-gemini-cli/gemini-3-pro-preview"
-        },
-        "tools": {
-          "allow": [],
-          "deny": []
-        }
-      }
-    ]
+  "meta": {
+    "lastTouchedVersion": "2026.3.2",
+    "lastTouchedAt": "2026-03-06T15:27:43.199Z"
   },
   "auth": {
     "profiles": {
@@ -94,61 +19,78 @@
       "google-gemini-cli": ["google-gemini-cli:default"]
     }
   },
-  "skills": {
-    "entries": {
-      "notion": {
-        "enabled": true,
-        "apiKey": "${NOTION_API_KEY}"
-      }
-    }
-  },
-  "plugins": {
-    "allow": ["feishu", "google-gemini-cli-auth", "device-pair"],
-    "entries": {
-      "feishu": {
-        "enabled": true
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "openai-codex/gpt-5.4",
+        "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
       },
-      "google-gemini-cli-auth": {
-        "enabled": true
+      "workspace": "~/.openclaw/workspace",
+      "compaction": {
+        "mode": "safeguard"
       }
-    }
-  },
-  "channels": {
-    "feishu": {
-      "enabled": true,
-      "connectionMode": "websocket",
-      "domain": "feishu",
-      "dmPolicy": "pairing",
-      "allowFrom": [],
-      "groupPolicy": "open",
-      "groupAllowFrom": [],
-      "requireMention": false,
-      "defaultAccount": "bot_main",
-      "groups": {},
-      "accounts": {
-        "bot_main": {
-          "appId": "${FEISHU_MAIN_APP_ID}",
-          "appSecret": "${FEISHU_MAIN_APP_SECRET}"
+    },
+    "list": [
+      {
+        "id": "main",
+        "default": true,
+        "workspace": "~/.openclaw/workspace/main",
+        "model": {
+          "primary": "google-gemini-cli/gemini-3-pro-preview"
         },
-        "bot_client": {
-          "appId": "${FEISHU_CLIENT_APP_ID}",
-          "appSecret": "${FEISHU_CLIENT_APP_SECRET}"
+        "tools": {
+          "allow": [],
+          "deny": []
+        }
+      },
+      {
+        "id": "client",
+        "default": true,
+        "workspace": "~/.openclaw/workspace/client",
+        "model": {
+          "primary": "openai-codex/gpt-5.4",
+          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
         },
-        "bot_server": {
-          "enabled": false
+        "tools": {
+          "allow": [],
+          "deny": []
+        }
+      },
+      {
+        "id": "server",
+        "workspace": "~/.openclaw/workspace/server",
+        "model": {
+          "primary": "openai-codex/gpt-5.4",
+          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
         },
-        "bot_pm": {
-          "enabled": true,
-          "appId": "${FEISHU_PM_APP_ID}",
-          "appSecret": "${FEISHU_PM_APP_SECRET}"
+        "tools": {
+          "allow": [],
+          "deny": []
+        }
+      },
+      {
+        "id": "pm",
+        "workspace": "~/.openclaw/workspace/pm",
+        "model": {
+          "primary": "google-gemini-cli/gemini-3-flash-preview"
         },
-        "bot_ba": {
-          "enabled": true,
-          "appId": "${FEISHU_BA_APP_ID}",
-          "appSecret": "${FEISHU_BA_APP_SECRET}"
+        "tools": {
+          "allow": [],
+          "deny": []
+        }
+      },
+      {
+        "id": "ba",
+        "workspace": "~/.openclaw/workspace/ba",
+        "model": {
+          "primary": "google-gemini-cli/gemini-3-flash-preview"
+        },
+        "tools": {
+          "allow": [],
+          "deny": []
         }
       }
-    }
+    ]
   },
   "bindings": [
     {
@@ -186,5 +128,77 @@
         "accountId": "bot_ba"
       }
     }
-  ]
+  ],
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "connectionMode": "websocket",
+      "domain": "feishu",
+      "dmPolicy": "pairing",
+      "allowFrom": [],
+      "groupPolicy": "open",
+      "groupAllowFrom": [],
+      "requireMention": false,
+      "defaultAccount": "bot_main",
+      "groups": {},
+      "accounts": {
+        "bot_main": {
+          "enabled": true,
+          "appId": "${FEISHU_MAIN_APP_ID}",
+          "appSecret": "${FEISHU_MAIN_APP_SECRET}"
+        },
+        "bot_client": {
+          "enabled": true,
+          "appId": "${FEISHU_CLIENT_APP_ID}",
+          "appSecret": "${FEISHU_CLIENT_APP_SECRET}"
+        },
+        "bot_server": {
+          "enabled": false
+        },
+        "bot_pm": {
+          "enabled": true,
+          "appId": "${FEISHU_PM_APP_ID}",
+          "appSecret": "${FEISHU_PM_APP_SECRET}"
+        },
+        "bot_ba": {
+          "enabled": true,
+          "appId": "${FEISHU_BA_APP_ID}",
+          "appSecret": "${FEISHU_BA_APP_SECRET}"
+        }
+      }
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    }
+  },
+  "skills": {
+    "entries": {
+      "notion": {
+        "enabled": true,
+        "apiKey": "${NOTION_API_KEY}"
+      }
+    }
+  },
+  "plugins": {
+    "allow": ["feishu", "google-gemini-cli-auth", "device-pair"],
+    "entries": {
+      "feishu": {
+        "enabled": true
+      },
+      "google-gemini-cli-auth": {
+        "enabled": true
+      }
+    }
+  }
 }

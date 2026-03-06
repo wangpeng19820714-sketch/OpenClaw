@@ -10,6 +10,7 @@ readonly DEFAULT_OPENCLAW_VERSION="2026.3.2"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DEFAULT_CONFIG_PATH="${REPO_ROOT}/configs/openclaw.json"
 
 ENV_FILE="${OPENCLAW_ENV_FILE:-${REPO_ROOT}/.env}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
@@ -19,7 +20,15 @@ INSTALL_ROOT="${OPENCLAW_INSTALL_ROOT:-${HOME}/.openclaw/bootstrap}"
 NPM_PREFIX="${OPENCLAW_NPM_PREFIX:-${INSTALL_ROOT}/npm-global}"
 OPENCLAW_NPM_SPEC="${OPENCLAW_NPM_SPEC:-openclaw@${DEFAULT_OPENCLAW_VERSION}}"
 OPENCLAW_BIN="${OPENCLAW_BIN:-${NPM_PREFIX}/bin/openclaw}"
+GEMINI_BIN="${OPENCLAW_GEMINI_BIN:-}"
+GEMINI_CLI_NPM_SPEC="${OPENCLAW_GEMINI_CLI_NPM_SPEC:-@google/gemini-cli}"
 GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-${DEFAULT_PORT}}"
+GATEWAY_LAUNCHD_LABEL="${OPENCLAW_LAUNCHD_LABEL:-ai.openclaw.gateway}"
+GATEWAY_LAUNCHD_PLIST="${HOME}/Library/LaunchAgents/${GATEWAY_LAUNCHD_LABEL}.plist"
+
+if [[ -z "${OPENCLAW_CONFIG_PATH:-}" && -f "${DEFAULT_CONFIG_PATH}" ]]; then
+  export OPENCLAW_CONFIG_PATH="${DEFAULT_CONFIG_PATH}"
+fi
 
 BOOTSTRAP_LOG_FILE=""
 GATEWAY_STDOUT_LOG=""
@@ -27,6 +36,30 @@ GATEWAY_STDERR_LOG=""
 
 now() {
   date "+%Y-%m-%d %H:%M:%S"
+}
+
+is_truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ensure_dir_on_path() {
+  local dir="$1"
+  [[ -n "${dir}" && -d "${dir}" ]] || return 0
+  case ":${PATH}:" in
+    *":${dir}:"*)
+      ;;
+    *)
+      PATH="${dir}:${PATH}"
+      export PATH
+      ;;
+  esac
 }
 
 refresh_runtime_paths() {
@@ -73,6 +106,23 @@ resolve_openclaw_bin_path() {
   return 1
 }
 
+resolve_gemini_bin_path() {
+  local candidate discovered
+  discovered="$(command -v gemini 2>/dev/null || true)"
+  for candidate in \
+    "${GEMINI_BIN}" \
+    "${discovered}" \
+    "${NPM_PREFIX}/bin/gemini" \
+    "${NPM_PREFIX}/node_modules/.bin/gemini"; do
+    if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+      ensure_dir_on_path "$(dirname "${candidate}")"
+      GEMINI_BIN="${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 run_quiet() {
   local description="$1"
   shift
@@ -83,6 +133,19 @@ run_quiet() {
     tail -n 40 "${BOOTSTRAP_LOG_FILE}" || true
     die "${description} failed"
   fi
+}
+
+is_gateway_launchagent_loaded() {
+  launchctl print "gui/${UID}/${GATEWAY_LAUNCHD_LABEL}" >/dev/null 2>&1
+}
+
+ensure_gateway_launchagent_loaded() {
+  if is_gateway_launchagent_loaded; then
+    return 0
+  fi
+  [[ -f "${GATEWAY_LAUNCHD_PLIST}" ]] || return 1
+  run_quiet "Bootstrapping gateway LaunchAgent" \
+    launchctl bootstrap "gui/${UID}" "${GATEWAY_LAUNCHD_PLIST}"
 }
 
 require_macos() {
@@ -186,6 +249,24 @@ update_openclaw() {
   resolve_openclaw_bin_path || die "OpenClaw binary not found after update under ${NPM_PREFIX}"
 }
 
+ensure_gemini_cli_installed() {
+  if resolve_gemini_bin_path; then
+    log "Gemini CLI found at ${GEMINI_BIN}."
+    return 0
+  fi
+
+  if command -v brew >/dev/null 2>&1; then
+    run_quiet "Installing gemini-cli via Homebrew" brew install gemini-cli
+  else
+    mkdir -p "${NPM_PREFIX}"
+    run_quiet "Installing ${GEMINI_CLI_NPM_SPEC} into ${NPM_PREFIX}" \
+      npm install -g --prefix "${NPM_PREFIX}" --no-audit --no-fund "${GEMINI_CLI_NPM_SPEC}"
+  fi
+
+  resolve_gemini_bin_path || die "Gemini CLI not found after installation."
+  log "Gemini CLI ready at ${GEMINI_BIN}."
+}
+
 configure_gateway_defaults() {
   run_quiet "Setting gateway.mode=local" \
     "${OPENCLAW_BIN}" config set gateway.mode local
@@ -197,6 +278,95 @@ configure_gateway_defaults() {
 install_gateway_daemon() {
   run_quiet "Installing gateway daemon (launchd, port ${GATEWAY_PORT})" \
     "${OPENCLAW_BIN}" gateway install --force --port "${GATEWAY_PORT}"
+}
+
+provider_needs_gemini_cli() {
+  [[ "${1:-}" == "google-gemini-cli" ]]
+}
+
+provider_oauth_status() {
+  local provider="$1"
+  "${OPENCLAW_BIN}" models status --json 2>>"${BOOTSTRAP_LOG_FILE}" | node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  input += chunk;
+});
+process.stdin.on("end", () => {
+  const start = input.indexOf("{");
+  if (start < 0) {
+    process.exit(2);
+  }
+  const payload = JSON.parse(input.slice(start));
+  const provider = process.argv[1];
+  const entry = payload?.auth?.oauth?.providers?.find((item) => item.provider === provider);
+  process.stdout.write(entry?.status ?? "missing");
+});' "${provider}"
+}
+
+enable_google_gemini_cli_auth_plugin() {
+  run_quiet "Enabling google-gemini-cli-auth plugin" \
+    "${OPENCLAW_BIN}" plugins enable google-gemini-cli-auth
+}
+
+ensure_provider_oauth_ready() {
+  local provider="$1"
+  local status=""
+
+  if provider_needs_gemini_cli "${provider}"; then
+    ensure_gemini_cli_installed
+    enable_google_gemini_cli_auth_plugin
+  fi
+
+  status="$(provider_oauth_status "${provider}")" || die "Failed to inspect OAuth status for ${provider}."
+  case "${status}" in
+    ok)
+      log "OAuth already configured for ${provider}."
+      return 0
+      ;;
+    expiring)
+      log "OAuth for ${provider} is valid but expiring soon."
+      return 0
+      ;;
+  esac
+
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    die "OAuth missing for ${provider}. Re-run interactively or set OPENCLAW_OAUTH_SKIP=1 to skip validation."
+  fi
+
+  log "OAuth missing for ${provider}; starting login flow."
+  "${OPENCLAW_BIN}" models auth login --provider "${provider}" --set-default || \
+    die "OAuth login failed for ${provider}."
+
+  status="$(provider_oauth_status "${provider}")" || die "Failed to re-check OAuth status for ${provider}."
+  case "${status}" in
+    ok|expiring)
+      log "OAuth verified for ${provider}."
+      ;;
+    *)
+      die "OAuth login completed but ${provider} is still reported as ${status}."
+      ;;
+  esac
+}
+
+ensure_requested_oauth_providers_ready() {
+  local raw provider
+
+  if is_truthy "${OPENCLAW_OAUTH_SKIP:-0}"; then
+    log "Skipping OAuth validation per OPENCLAW_OAUTH_SKIP."
+    return 0
+  fi
+
+  raw="${OPENCLAW_OAUTH_PROVIDERS:-}"
+  if [[ -z "${raw//[[:space:],]/}" ]]; then
+    return 0
+  fi
+
+  raw="${raw//,/ }"
+  for provider in ${raw}; do
+    [[ -n "${provider}" ]] || continue
+    ensure_provider_oauth_ready "${provider}"
+  done
 }
 
 health_check() {
@@ -234,6 +404,7 @@ cmd_deploy() {
   load_env_file
   ensure_openclaw_installed
   sync_env_to_state_dir
+  ensure_requested_oauth_providers_ready
   configure_gateway_defaults
   install_gateway_daemon
 
@@ -252,6 +423,8 @@ cmd_start() {
   load_env_file
   ensure_openclaw_installed
   sync_env_to_state_dir
+  ensure_requested_oauth_providers_ready
+  ensure_gateway_launchagent_loaded || true
 
   run_quiet "Starting gateway service" "${OPENCLAW_BIN}" gateway start
 
@@ -389,6 +562,11 @@ Environment variables:
   OPENCLAW_NPM_SPEC     npm package spec (default: openclaw@${DEFAULT_OPENCLAW_VERSION})
   OPENCLAW_NPM_PREFIX   npm prefix for local install (default: ${NPM_PREFIX})
   OPENCLAW_BIN          Explicit openclaw binary path
+  OPENCLAW_GEMINI_BIN   Explicit gemini binary path
+  OPENCLAW_OAUTH_PROVIDERS
+                       Comma-separated OAuth providers to verify during deploy/start
+                       (example: google-gemini-cli,openai-codex)
+  OPENCLAW_OAUTH_SKIP   Skip OAuth verification when set to 1/true/yes/on
   OPENCLAW_GATEWAY_PORT Default gateway port (default: ${DEFAULT_PORT})
 USAGE
 }

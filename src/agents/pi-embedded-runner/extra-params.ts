@@ -44,9 +44,11 @@ export function resolveExtraParams(params: {
 }
 
 type CacheRetention = "none" | "short" | "long";
+type OpenAIServiceTier = "auto" | "default" | "flex" | "priority";
 type CacheRetentionStreamOptions = Partial<SimpleStreamOptions> & {
   cacheRetention?: CacheRetention;
   openaiWsWarmup?: boolean;
+  serviceTier?: OpenAIServiceTier;
 };
 
 /**
@@ -102,6 +104,25 @@ function resolveCacheRetention(
   return "short";
 }
 
+function resolveOpenAIServiceTier(
+  extraParams: Record<string, unknown> | undefined,
+): OpenAIServiceTier | undefined {
+  const configured = extraParams?.serviceTier;
+  if (
+    configured === "auto" ||
+    configured === "default" ||
+    configured === "flex" ||
+    configured === "priority"
+  ) {
+    return configured;
+  }
+  if (configured != null) {
+    const summary = typeof configured === "string" ? configured : typeof configured;
+    log.warn(`ignoring invalid serviceTier param: ${summary}`);
+  }
+  return undefined;
+}
+
 function createStreamFnWithExtraParams(
   baseStreamFn: StreamFn | undefined,
   extraParams: Record<string, unknown> | undefined,
@@ -131,6 +152,10 @@ function createStreamFnWithExtraParams(
   const cacheRetention = resolveCacheRetention(extraParams, provider);
   if (cacheRetention) {
     streamParams.cacheRetention = cacheRetention;
+  }
+  const serviceTier = resolveOpenAIServiceTier(extraParams);
+  if (serviceTier) {
+    streamParams.serviceTier = serviceTier;
   }
 
   // Extract OpenRouter provider routing preferences from extraParams.provider.

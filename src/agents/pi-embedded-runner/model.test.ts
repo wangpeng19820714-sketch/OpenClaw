@@ -235,6 +235,15 @@ describe("resolveModel", () => {
     expect(result.model).toMatchObject(buildOpenAICodexForwardCompatExpectation("gpt-5.3-codex"));
   });
 
+  it("builds an openai-codex fallback for gpt-5.4", () => {
+    mockOpenAICodexTemplateModel();
+
+    const result = resolveModel("openai-codex", "gpt-5.4", "/tmp/agent");
+
+    expect(result.error).toBeUndefined();
+    expect(result.model).toMatchObject(buildOpenAICodexForwardCompatExpectation("gpt-5.4"));
+  });
+
   it("builds an anthropic forward-compat fallback for claude-opus-4-6", () => {
     mockDiscoveredModel({
       provider: "anthropic",
@@ -350,6 +359,29 @@ describe("resolveModel", () => {
       expectedModel: {
         api: "openai-codex-responses",
         id: "gpt-5.3-codex",
+        provider: "openai-codex",
+      },
+    });
+  });
+
+  it("uses codex fallback for gpt-5.4 even when openai-codex provider is configured", () => {
+    const cfg: OpenClawConfig = {
+      models: {
+        providers: {
+          "openai-codex": {
+            baseUrl: "https://custom.example.com",
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    expectResolvedForwardCompatFallback({
+      provider: "openai-codex",
+      id: "gpt-5.4",
+      cfg,
+      expectedModel: {
+        api: "openai-codex-responses",
+        id: "gpt-5.4",
         provider: "openai-codex",
       },
     });
