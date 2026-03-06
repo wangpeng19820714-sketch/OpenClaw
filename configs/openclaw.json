@@ -17,29 +17,63 @@
     },
     "list": [
       {
-        "id": "client",
+        "id": "main",
+        "workspace": "~/.openclaw/workspace/main",
         "default": true,
         "model": {
           "primary": "openai-codex/gpt-5.3-codex",
           "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
+        },
+        "tools": {
+          "allow": [],
+          "deny": []
+        }
+      },
+      {
+        "id": "client",
+        "workspace": "~/.openclaw/workspace/client",
+        "default": true,
+        "model": {
+          "primary": "openai-codex/gpt-5.3-codex",
+          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
+        },
+        "tools": {
+          "allow": [],
+          "deny": []
         }
       },
       {
         "id": "server",
+        "workspace": "~/.openclaw/workspace/server",
         "model": {
-          "primary": "openai-codex/gpt-5.3-codex"
+          "primary": "openai-codex/gpt-5.3-codex",
+          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
+        },
+        "tools": {
+          "allow": [],
+          "deny": []
         }
       },
       {
         "id": "pm",
+        "workspace": "~/.openclaw/workspace/pm",
         "model": {
           "primary": "google-gemini-cli/gemini-3-pro-preview"
+        },
+        "tools": {
+          "allow": [],
+          "deny": []
         }
       },
       {
         "id": "ba",
+        "workspace": "~/.openclaw/workspace/ba",
         "model": {
           "primary": "google-gemini-cli/gemini-3-pro-preview"
+        },
+        "tools": {
+          "allow": [],
+          "deny": []
         }
       }
     ]
@@ -85,9 +119,12 @@
       "connectionMode": "websocket",
       "domain": "feishu",
       "dmPolicy": "pairing",
+      "allowFrom": [],
       "groupPolicy": "open",
+      "groupAllowFrom": [],
       "requireMention": false,
       "defaultAccount": "bot_main",
+      "groups": {},
       "accounts": {
         "bot_main": {
           "appId": "${FEISHU_MAIN_APP_ID}",
