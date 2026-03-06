@@ -22,7 +22,7 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "openai-codex/gpt-5.4",
+        "primary": "openai-codex/gpt-5.3-codex",
         "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
       },
       "workspace": "~/.openclaw/workspace",
@@ -45,10 +45,9 @@
       },
       {
         "id": "client",
-        "default": true,
         "workspace": "~/.openclaw/workspace/client",
         "model": {
-          "primary": "openai-codex/gpt-5.4",
+          "primary": "openai-codex/gpt-5.3-codex",
           "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
         },
         "tools": {
@@ -140,8 +139,8 @@
       "enabled": true,
       "connectionMode": "websocket",
       "domain": "feishu",
-      "dmPolicy": "pairing",
-      "allowFrom": [],
+      "dmPolicy": "open",
+      "allowFrom": ["*"],
       "groupPolicy": "open",
       "groupAllowFrom": [],
       "requireMention": false,
