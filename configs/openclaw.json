@@ -1,7 +1,7 @@
 {
   "meta": {
-    "lastTouchedVersion": "2026.3.2",
-    "lastTouchedAt": "2026-03-06T15:42:02.847Z"
+    "lastTouchedVersion": "2026.3.3",
+    "lastTouchedAt": "2026-03-07T04:36:01.571Z"
   },
   "auth": {
     "profiles": {
@@ -12,18 +12,28 @@
       "google-gemini-cli:default": {
         "provider": "google-gemini-cli",
         "mode": "oauth"
+      },
+      "google-gemini-cli:wangpeng19820714@gmail.com": {
+        "provider": "google-gemini-cli",
+        "mode": "oauth"
       }
     },
     "order": {
       "openai-codex": ["openai-codex:default"],
-      "google-gemini-cli": ["google-gemini-cli:default"]
+      "google-gemini-cli": [
+        "google-gemini-cli:wangpeng19820714@gmail.com",
+        "google-gemini-cli:default"
+      ]
     }
   },
   "agents": {
     "defaults": {
       "model": {
-        "primary": "openai-codex/gpt-5.4",
+        "primary": "google-gemini-cli/gemini-3-pro-preview",
         "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
+      },
+      "models": {
+        "google-gemini-cli/gemini-3-pro-preview": {}
       },
       "workspace": "~/.openclaw/workspace",
       "compaction": {
@@ -71,7 +81,11 @@
         "id": "pm",
         "workspace": "~/.openclaw/workspace/pm",
         "model": {
-          "primary": "google-gemini-cli/gemini-3-flash-preview"
+          "primary": "openai-codex/gpt-5.4",
+          "fallbacks": [
+            "google-gemini-cli/gemini-3-flash-preview",
+            "google-gemini-cli/gemini-3-pro-preview"
+          ]
         },
         "tools": {
           "allow": [],
@@ -82,10 +96,42 @@
         "id": "ba",
         "workspace": "~/.openclaw/workspace/ba",
         "model": {
-          "primary": "google-gemini-cli/gemini-3-flash-preview"
+          "primary": "openai-codex/gpt-5.4",
+          "fallbacks": [
+            "google-gemini-cli/gemini-3-flash-preview",
+            "google-gemini-cli/gemini-3-pro-preview"
+          ]
         },
         "tools": {
-          "allow": [],
+          "allow": [
+            "read",
+            "edit",
+            "write",
+            "web_search",
+            "web_fetch",
+            "memory_search",
+            "memory_store",
+            "memory_list",
+            "memory_get",
+            "memory_update",
+            "memory_history",
+            "memory_forget",
+            "memory_clear",
+            "memory_dashboard",
+            "feishu_doc",
+            "feishu_app_scopes",
+            "feishu_chat",
+            "feishu_wiki",
+            "feishu_drive",
+            "feishu_bitable_get_meta",
+            "feishu_bitable_list_fields",
+            "feishu_bitable_list_records",
+            "feishu_bitable_get_record",
+            "feishu_bitable_create_record",
+            "feishu_bitable_update_record",
+            "feishu_bitable_create_app",
+            "feishu_bitable_create_field"
+          ],
           "deny": []
         }
       }
@@ -139,14 +185,16 @@
       "enabled": true,
       "connectionMode": "websocket",
       "domain": "feishu",
-      "dmPolicy": "open",
-      "allowFrom": ["*"],
-      "groupPolicy": "open",
-      "groupAllowFrom": [],
       "requireMention": false,
       "defaultAccount": "bot_main",
       "groups": {},
       "accounts": {
+        "default": {
+          "dmPolicy": "open",
+          "allowFrom": ["*"],
+          "groupPolicy": "open",
+          "groupAllowFrom": []
+        },
         "bot_main": {
           "enabled": true,
           "appId": "${FEISHU_MAIN_APP_ID}",
@@ -190,13 +238,31 @@
     }
   },
   "plugins": {
-    "allow": ["feishu", "google-gemini-cli-auth", "device-pair"],
+    "allow": ["feishu", "google-gemini-cli-auth", "device-pair", "mem0"],
+    "load": {
+      "paths": ["~/Documents/GitHub/OpenClaw/extensions-custom/mem0-upstream/openclaw"]
+    },
+    "slots": {
+      "memory": "mem0"
+    },
     "entries": {
       "feishu": {
         "enabled": true
       },
       "google-gemini-cli-auth": {
         "enabled": true
+      },
+      "mem0": {
+        "enabled": true,
+        "config": {
+          "baseUrl": "http://127.0.0.1:8888",
+          "autoRecall": true,
+          "autoCapture": true,
+          "notifyOnLongTermWrite": true,
+          "longTermWriteNotice": "已写入长期记忆。",
+          "topK": 5,
+          "requestTimeoutMs": 45000
+        }
       }
     }
   }
