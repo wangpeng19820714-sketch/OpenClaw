@@ -1,7 +1,7 @@
 {
   "meta": {
     "lastTouchedVersion": "2026.3.3",
-    "lastTouchedAt": "2026-03-08T04:03:35.297Z"
+    "lastTouchedAt": "2026-03-10T02:21:01.931Z"
   },
   "auth": {
     "profiles": {
@@ -19,7 +19,9 @@
       }
     },
     "order": {
-      "openai-codex": ["openai-codex:default"],
+      "openai-codex": [
+        "openai-codex:default"
+      ],
       "google-gemini-cli": [
         "google-gemini-cli:wangpeng19820714@gmail.com",
         "google-gemini-cli:default"
@@ -29,10 +31,14 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "google-gemini-cli/gemini-3-pro-preview",
-        "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
+        "primary": "openai-codex/gpt-5.3-codex",
+        "fallbacks": [
+          "google-gemini-cli/gemini-3-pro-preview"
+        ]
       },
       "models": {
+        "openai-codex/gpt-5.3-codex": {},
+        "google-gemini-cli/gemini-3-flash-preview": {},
         "google-gemini-cli/gemini-3-pro-preview": {}
       },
       "workspace": "~/.openclaw/workspace",
@@ -46,7 +52,10 @@
         "default": true,
         "workspace": "~/.openclaw/workspace/main",
         "model": {
-          "primary": "google-gemini-cli/gemini-3-pro-preview"
+          "primary": "openai-codex/gpt-5.3-codex",
+          "fallbacks": [
+            "google-gemini-cli/gemini-3-pro-preview"
+          ]
         },
         "tools": {
           "allow": [
@@ -68,8 +77,10 @@
         "id": "client",
         "workspace": "~/.openclaw/workspace/client",
         "model": {
-          "primary": "openai-codex/gpt-5.4",
-          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
+          "primary": "openai-codex/gpt-5.3-codex",
+          "fallbacks": [
+            "google-gemini-cli/gemini-3-pro-preview"
+          ]
         },
         "tools": {
           "allow": [
@@ -91,8 +102,10 @@
         "id": "server",
         "workspace": "~/.openclaw/workspace/server",
         "model": {
-          "primary": "openai-codex/gpt-5.4",
-          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
+          "primary": "openai-codex/gpt-5.3-codex",
+          "fallbacks": [
+            "google-gemini-cli/gemini-3-pro-preview"
+          ]
         },
         "tools": {
           "allow": [],
@@ -103,7 +116,7 @@
         "id": "pm",
         "workspace": "~/.openclaw/workspace/pm",
         "model": {
-          "primary": "openai-codex/gpt-5.4",
+          "primary": "openai-codex/gpt-5.3-codex",
           "fallbacks": [
             "google-gemini-cli/gemini-3-flash-preview",
             "google-gemini-cli/gemini-3-pro-preview"
@@ -142,14 +155,19 @@
       {
         "id": "ba",
         "workspace": "~/.openclaw/workspace/ba",
-        "subagents": {
-          "allowAgents": ["main", "client", "server", "pm"]
-        },
         "model": {
-          "primary": "openai-codex/gpt-5.4",
+          "primary": "openai-codex/gpt-5.3-codex",
           "fallbacks": [
             "google-gemini-cli/gemini-3-flash-preview",
             "google-gemini-cli/gemini-3-pro-preview"
+          ]
+        },
+        "subagents": {
+          "allowAgents": [
+            "main",
+            "client",
+            "server",
+            "pm"
           ]
         },
         "tools": {
@@ -183,6 +201,21 @@
         }
       }
     ]
+  },
+  "tools": {
+    "sessions": {
+      "visibility": "all"
+    },
+    "agentToAgent": {
+      "enabled": true,
+      "allow": [
+        "main",
+        "client",
+        "server",
+        "pm",
+        "ba"
+      ]
+    }
   },
   "bindings": [
     {
@@ -238,7 +271,9 @@
       "accounts": {
         "default": {
           "dmPolicy": "open",
-          "allowFrom": ["*"],
+          "allowFrom": [
+            "*"
+          ],
           "groupPolicy": "open",
           "groupAllowFrom": []
         },
@@ -273,7 +308,10 @@
     "mode": "local",
     "bind": "loopback",
     "controlUi": {
-      "allowedOrigins": ["http://localhost:18789", "http://127.0.0.1:18789"]
+      "allowedOrigins": [
+        "http://localhost:18789",
+        "http://127.0.0.1:18789"
+      ]
     },
     "auth": {
       "mode": "token",
@@ -288,21 +326,18 @@
       }
     }
   },
-  "tools": {
-    "agentToAgent": {
-      "enabled": true,
-      "allow": ["main", "client", "server", "pm", "ba"]
-    },
-    "sessions": {
-      "visibility": "all"
-    }
-  },
   "plugins": {
-    "allow": ["feishu", "google-gemini-cli-auth", "device-pair", "mem0", "orchestrator"],
+    "allow": [
+      "feishu",
+      "google-gemini-cli-auth",
+      "device-pair",
+      "mem0",
+      "orchestrator"
+    ],
     "load": {
       "paths": [
-        "/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/mem0-openclaw",
-        "/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/orchestrator"
+        "extensions-custom/mem0-openclaw",
+        "extensions-custom/orchestrator"
       ]
     },
     "slots": {
@@ -324,7 +359,13 @@
           "maxConcurrentSteps": 8,
           "defaultRunTimeoutSeconds": 900,
           "defaultRetryLimit": 1,
-          "allowedTargetAgents": ["main", "client", "server", "pm", "ba"],
+          "allowedTargetAgents": [
+            "main",
+            "client",
+            "server",
+            "pm",
+            "ba"
+          ],
           "memory": {
             "enabled": true,
             "baseUrl": "http://127.0.0.1:8888",
