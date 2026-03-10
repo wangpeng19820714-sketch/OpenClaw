@@ -1,7 +1,7 @@
 {
   "meta": {
     "lastTouchedVersion": "2026.3.3",
-    "lastTouchedAt": "2026-03-10T02:21:01.931Z"
+    "lastTouchedAt": "2026-03-08T04:03:35.297Z"
   },
   "auth": {
     "profiles": {
@@ -19,9 +19,7 @@
       }
     },
     "order": {
-      "openai-codex": [
-        "openai-codex:default"
-      ],
+      "openai-codex": ["openai-codex:default"],
       "google-gemini-cli": [
         "google-gemini-cli:wangpeng19820714@gmail.com",
         "google-gemini-cli:default"
@@ -31,14 +29,10 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "openai-codex/gpt-5.3-codex",
-        "fallbacks": [
-          "google-gemini-cli/gemini-3-pro-preview"
-        ]
+        "primary": "google-gemini-cli/gemini-3-pro-preview",
+        "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
       },
       "models": {
-        "openai-codex/gpt-5.3-codex": {},
-        "google-gemini-cli/gemini-3-flash-preview": {},
         "google-gemini-cli/gemini-3-pro-preview": {}
       },
       "workspace": "~/.openclaw/workspace",
@@ -51,22 +45,30 @@
         "id": "main",
         "default": true,
         "workspace": "~/.openclaw/workspace/main",
+        "subagents": {
+          "allowAgents": ["client", "pm", "server", "ba"]
+        },
         "model": {
-          "primary": "openai-codex/gpt-5.3-codex",
-          "fallbacks": [
-            "google-gemini-cli/gemini-3-pro-preview"
-          ]
+          "primary": "google-gemini-cli/gemini-3-pro-preview"
         },
         "tools": {
           "allow": [
             "read",
             "edit",
             "write",
+            "exec",
             "web_search",
             "web_fetch",
             "memory_search",
             "memory_store",
             "memory_list",
+            "agents_list",
+            "sessions_list",
+            "sessions_history",
+            "sessions_send",
+            "sessions_spawn",
+            "session_status",
+            "subagents",
             "feishu_app_scopes",
             "feishu_chat"
           ],
@@ -76,22 +78,31 @@
       {
         "id": "client",
         "workspace": "~/.openclaw/workspace/client",
+        "subagents": {
+          "allowAgents": ["main", "pm", "server", "ba"]
+        },
         "model": {
-          "primary": "openai-codex/gpt-5.3-codex",
-          "fallbacks": [
-            "google-gemini-cli/gemini-3-pro-preview"
-          ]
+          "primary": "openai-codex/gpt-5.4",
+          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
         },
         "tools": {
           "allow": [
             "read",
             "edit",
             "write",
+            "exec",
             "web_search",
             "web_fetch",
             "memory_search",
             "memory_store",
             "memory_list",
+            "agents_list",
+            "sessions_list",
+            "sessions_history",
+            "sessions_send",
+            "sessions_spawn",
+            "session_status",
+            "subagents",
             "feishu_app_scopes",
             "feishu_chat"
           ],
@@ -102,10 +113,8 @@
         "id": "server",
         "workspace": "~/.openclaw/workspace/server",
         "model": {
-          "primary": "openai-codex/gpt-5.3-codex",
-          "fallbacks": [
-            "google-gemini-cli/gemini-3-pro-preview"
-          ]
+          "primary": "openai-codex/gpt-5.4",
+          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
         },
         "tools": {
           "allow": [],
@@ -115,8 +124,11 @@
       {
         "id": "pm",
         "workspace": "~/.openclaw/workspace/pm",
+        "subagents": {
+          "allowAgents": ["main", "client", "server", "ba"]
+        },
         "model": {
-          "primary": "openai-codex/gpt-5.3-codex",
+          "primary": "openai-codex/gpt-5.4",
           "fallbacks": [
             "google-gemini-cli/gemini-3-flash-preview",
             "google-gemini-cli/gemini-3-pro-preview"
@@ -140,12 +152,6 @@
             "sessions_spawn",
             "session_status",
             "subagents",
-            "workflow_memory_context",
-            "workflow_submit",
-            "workflow_status",
-            "workflow_list",
-            "workflow_cancel",
-            "workflow_validate",
             "feishu_app_scopes",
             "feishu_chat"
           ],
@@ -155,19 +161,14 @@
       {
         "id": "ba",
         "workspace": "~/.openclaw/workspace/ba",
+        "subagents": {
+          "allowAgents": ["main", "client", "server", "pm"]
+        },
         "model": {
-          "primary": "openai-codex/gpt-5.3-codex",
+          "primary": "openai-codex/gpt-5.4",
           "fallbacks": [
             "google-gemini-cli/gemini-3-flash-preview",
             "google-gemini-cli/gemini-3-pro-preview"
-          ]
-        },
-        "subagents": {
-          "allowAgents": [
-            "main",
-            "client",
-            "server",
-            "pm"
           ]
         },
         "tools": {
@@ -188,12 +189,6 @@
             "sessions_spawn",
             "session_status",
             "subagents",
-            "workflow_memory_context",
-            "workflow_submit",
-            "workflow_status",
-            "workflow_list",
-            "workflow_cancel",
-            "workflow_validate",
             "feishu_app_scopes",
             "feishu_chat"
           ],
@@ -201,21 +196,6 @@
         }
       }
     ]
-  },
-  "tools": {
-    "sessions": {
-      "visibility": "all"
-    },
-    "agentToAgent": {
-      "enabled": true,
-      "allow": [
-        "main",
-        "client",
-        "server",
-        "pm",
-        "ba"
-      ]
-    }
   },
   "bindings": [
     {
@@ -271,9 +251,7 @@
       "accounts": {
         "default": {
           "dmPolicy": "open",
-          "allowFrom": [
-            "*"
-          ],
+          "allowFrom": ["*"],
           "groupPolicy": "open",
           "groupAllowFrom": []
         },
@@ -306,12 +284,10 @@
   "gateway": {
     "port": 18789,
     "mode": "local",
-    "bind": "loopback",
+    "bind": "custom",
+    "customBindHost": "127.0.0.1",
     "controlUi": {
-      "allowedOrigins": [
-        "http://localhost:18789",
-        "http://127.0.0.1:18789"
-      ]
+      "allowedOrigins": ["http://localhost:18789", "http://127.0.0.1:18789"]
     },
     "auth": {
       "mode": "token",
@@ -326,19 +302,19 @@
       }
     }
   },
+  "tools": {
+    "agentToAgent": {
+      "enabled": true,
+      "allow": ["main", "client", "server", "pm", "ba"]
+    },
+    "sessions": {
+      "visibility": "all"
+    }
+  },
   "plugins": {
-    "allow": [
-      "feishu",
-      "google-gemini-cli-auth",
-      "device-pair",
-      "mem0",
-      "orchestrator"
-    ],
+    "allow": ["feishu", "google-gemini-cli-auth", "device-pair", "mem0"],
     "load": {
-      "paths": [
-        "extensions-custom/mem0-openclaw",
-        "extensions-custom/orchestrator"
-      ]
+      "paths": ["/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/mem0-openclaw"]
     },
     "slots": {
       "memory": "mem0"
@@ -349,33 +325,6 @@
       },
       "google-gemini-cli-auth": {
         "enabled": true
-      },
-      "orchestrator": {
-        "enabled": true,
-        "config": {
-          "pollIntervalMs": 5000,
-          "leaseTtlMs": 60000,
-          "maxConcurrentWorkflows": 4,
-          "maxConcurrentSteps": 8,
-          "defaultRunTimeoutSeconds": 900,
-          "defaultRetryLimit": 1,
-          "allowedTargetAgents": [
-            "main",
-            "client",
-            "server",
-            "pm",
-            "ba"
-          ],
-          "memory": {
-            "enabled": true,
-            "baseUrl": "http://127.0.0.1:8888",
-            "requestTimeoutMs": 120000,
-            "planningTopK": 5,
-            "writeCompletedSummaries": true,
-            "writeFailureMemories": true
-          },
-          "cleanupCompletedAfterHours": 168
-        }
       },
       "mem0": {
         "enabled": true,
