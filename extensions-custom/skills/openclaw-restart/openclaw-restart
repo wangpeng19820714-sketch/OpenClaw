@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ENV_FILE=""
 resolve_repo_root() {
   local dir="$SCRIPT_DIR"
   while [[ "$dir" != "/" ]]; do
@@ -25,7 +26,24 @@ if [[ -z "$REPO_ROOT" ]]; then
   exit 1
 fi
 
-OPENCLAW_BIN="${REPO_ROOT}/openclaw.mjs"
+REPO_ENV_FILE="${OPENCLAW_RESTART_ENV_FILE:-$REPO_ROOT/.env}"
+FALLBACK_ENV_FILE="${HOME}/.openclaw/.env"
+if [[ -f "$REPO_ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  set -a
+  source "$REPO_ENV_FILE"
+  set +a
+else
+  # Prefer local project .env; if absent, fallback to service env.
+  if [[ -f "$FALLBACK_ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$FALLBACK_ENV_FILE"
+    set +a
+  fi
+fi
+
+OPENCLAW_BIN="${REPO_ROOT}/scripts/openclaw-tools/openclaw"
 REPO_CONFIG="${REPO_ROOT}/configs/openclaw.json"
 if [[ -f "$REPO_CONFIG" ]]; then
   DEFAULT_CONFIG="$REPO_CONFIG"
@@ -34,10 +52,12 @@ else
 fi
 DEFAULT_CONFIG="${OPENCLAW_CONFIG_PATH:-$DEFAULT_CONFIG}"
 DEFAULT_LOG="${HOME}/.openclaw/openclaw-gateway-restart.log"
+STATE_DIR="${HOME}/.openclaw"
 
 CONFIG_PATH="${OPENCLAW_RESTART_CONFIG_PATH:-$DEFAULT_CONFIG}"
 LOG_PATH="${OPENCLAW_RESTART_LOG_PATH:-$DEFAULT_LOG}"
 ACTION="restart"
+FORCE_INSTALL="1"
 
 require_command() {
   local cmd="$1"
@@ -157,12 +177,54 @@ run_gateway_stop() {
   return 0
 }
 
+ensure_log_path() {
+  local log_path="$1"
+  local log_dir
+  log_dir="$(dirname "$log_path")"
+  if mkdir -p "$log_dir" 2>/dev/null; then
+    if : > "$log_path" 2>/dev/null; then
+      echo "$log_path"
+      return 0
+    fi
+  fi
+
+  local fallback_log="/tmp/openclaw-gateway-restart.log"
+  if : > "$fallback_log" 2>/dev/null; then
+    echo "$fallback_log"
+    return
+  fi
+
+  echo "/dev/null"
+}
+
+sync_state_env() {
+  local source_env="$1"
+  local target_env="$2"
+
+  if [[ ! -f "$source_env" ]]; then
+    return 1
+  fi
+  if cp "$source_env" "$target_env" >/dev/null 2>&1; then
+    chmod 600 "$target_env" || true
+    return 0
+  fi
+  return 1
+}
+
 run_gateway_start() {
   local cfg="$1"
   local log="$2"
   local port
   port="$(resolve_gateway_port "$cfg")"
-  mkdir -p "$(dirname "$log")"
+  log="$(ensure_log_path "$log")"
+
+  if [[ "$FORCE_INSTALL" == "1" ]]; then
+    if ! run_gateway_install "$cfg"; then
+      echo "Warning: gateway install failed, fallback to direct gateway run."
+    fi
+  fi
+
+  mkdir -p "$(dirname "$log")" 2>/dev/null || true
   kill_listener_processes "$port" || true
 
   echo "Starting gateway with config: ${cfg}"
@@ -177,6 +239,35 @@ run_gateway_start() {
   fi
   echo "Gateway started. Log: ${log}"
 }
+
+run_gateway_install() {
+  local cfg="$1"
+  local port
+  local state_env="${STATE_DIR}/.env"
+
+  port="$(resolve_gateway_port "$cfg")"
+
+  if mkdir -p "${STATE_DIR}" 2>/dev/null; then
+    if sync_state_env "$REPO_ENV_FILE" "$state_env"; then
+      echo "Synced project .env to ${state_env}."
+    elif sync_state_env "$FALLBACK_ENV_FILE" "$state_env"; then
+      echo "Synced fallback env to ${state_env}."
+    elif [[ -f "$state_env" ]]; then
+      echo "Using existing ${state_env} for gateway install."
+    else
+      echo "Warning: no .env found for gateway service install; env fallback may be incomplete."
+    fi
+  else
+    echo "Warning: no .env found for gateway service install; env fallback may be incomplete."
+  fi
+
+  echo "Installing gateway service with force sync from config: ${cfg}"
+  (
+    cd "$REPO_ROOT"
+    OPENCLAW_CONFIG_PATH="$cfg" "${OPENCLAW_BIN}" gateway install --force --port "$port"
+  )
+}
+
 
 status() {
   local cfg="$1"
@@ -264,7 +355,7 @@ if [[ "$CONFIG_PATH" == "" ]]; then
 fi
 
 if [[ ! -x "$OPENCLAW_BIN" ]]; then
-  echo "openclaw.mjs not found: ${OPENCLAW_BIN}" >&2
+  echo "openclaw binary wrapper not found: ${OPENCLAW_BIN}" >&2
   exit 1
 fi
 

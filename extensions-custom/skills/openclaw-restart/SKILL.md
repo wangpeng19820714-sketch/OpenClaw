@@ -24,12 +24,13 @@ user-invocable: true
 执行 `openclaw_restart` 会按如下顺序处理：
 
 1. 先尝试 `gateway stop`。
-2. 再兜底清理当前配置端口的监听进程（默认 18789）。
-3. 在后台启动 `gateway run --force`。
+2. 同步 `.env` 到服务目录并执行 `gateway install --force`（用于重写服务环境）。
+3. 再兜底清理当前配置端口的监听进程（默认 18789）。
+4. 在后台启动 `gateway run --force`。
 
 默认使用仓库内 CLI 与配置：
 
-- 入口：`./openclaw.mjs`
+- 入口：`./scripts/openclaw-tools/openclaw`
 - 默认配置：`configs/openclaw.json`（如果不存在会回退到 `~/.openclaw/openclaw.json`，或优先读取 `OPENCLAW_CONFIG_PATH`）
 
 ## 快速命令（按执行体 `openclaw_restart`）
@@ -75,6 +76,6 @@ user-invocable: true
 ## 注意事项
 
 - 该 skill 不要求你在系统 PATH 中有 `openclaw` 全局命令。
-- 命令会尝试使用 `node openclaw.mjs` 执行本仓库本地 CLI，
+- 命令会尝试使用仓库内 wrapper `scripts/openclaw-tools/openclaw` 执行本地 CLI，
   避免 `command not found` 的问题。
 - `start`/`restart` 使用 `--force`，会清理占用目标端口的监听。

@@ -254,6 +254,9 @@
     "native": "auto",
     "nativeSkills": "auto",
     "restart": true,
+    "allowFrom": {
+      "feishu": ["${FEISHU_MAIN_OWNER_OPEN_ID}"]
+    },
     "ownerDisplay": "raw"
   },
   "channels": {
