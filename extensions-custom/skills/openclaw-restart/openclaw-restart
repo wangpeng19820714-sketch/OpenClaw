@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+resolve_repo_root() {
+  local dir="$SCRIPT_DIR"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/openclaw.mjs" ]]; then
+      echo "$dir"
+      return 0
+    fi
+    local parent
+    parent="$(cd "$dir/.." && pwd)"
+    if [[ "$parent" == "$dir" ]]; then
+      break
+    fi
+    dir="$parent"
+  done
+  echo ""
+}
+
+REPO_ROOT="$(resolve_repo_root)"
+if [[ -z "$REPO_ROOT" ]]; then
+  echo "Could not locate openclaw.mjs from ${SCRIPT_DIR}."
+  exit 1
+fi
+
+OPENCLAW_BIN="${REPO_ROOT}/openclaw.mjs"
+REPO_CONFIG="${REPO_ROOT}/configs/openclaw.json"
+if [[ -f "$REPO_CONFIG" ]]; then
+  DEFAULT_CONFIG="$REPO_CONFIG"
+else
+  DEFAULT_CONFIG="${HOME}/.openclaw/openclaw.json"
+fi
+DEFAULT_CONFIG="${OPENCLAW_CONFIG_PATH:-$DEFAULT_CONFIG}"
+DEFAULT_LOG="${HOME}/.openclaw/openclaw-gateway-restart.log"
+
+CONFIG_PATH="${OPENCLAW_RESTART_CONFIG_PATH:-$DEFAULT_CONFIG}"
+LOG_PATH="${OPENCLAW_RESTART_LOG_PATH:-$DEFAULT_LOG}"
+ACTION="restart"
+
+require_command() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Missing required binary: ${cmd}" >&2
+    exit 1
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+OpenClaw Restart Skill
+
+Usage:
+  openclaw_restart [restart|start|stop|status|kill] [options]
+
+Options:
+  --config <path>      Use specific OpenClaw config path
+  --log <path>         Gateway startup log path
+  --help               Show this help
+
+Defaults:
+  config: repo_root/configs/openclaw.json
+  log:    ~/.openclaw/openclaw-gateway-restart.log
+EOF
+}
+
+resolve_gateway_port() {
+  local cfg="$1"
+  if [[ ! -f "$cfg" ]]; then
+    echo "18789"
+    return 0
+  fi
+
+  node -e '
+    const fs = require("node:fs");
+    const cfg = process.argv[1];
+    try {
+      const json = JSON.parse(fs.readFileSync(cfg, "utf8"));
+      const port = Number((json && json.gateway && json.gateway.port) || 0);
+      process.stdout.write(port && port > 0 ? String(port) : "18789");
+    } catch {
+      process.stdout.write("18789");
+    }
+  ' "$cfg"
+}
+
+gateway_listener_pids() {
+  local port="$1"
+  local pids
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(
+      lsof -nP -iTCP:"$port" -sTCP:LISTEN -Fp 2>/dev/null |
+      awk '/^p[0-9]+$/ { print substr($0, 2) }'
+    )"
+    if [[ -n "$pids" ]]; then
+      printf '%s\n' "${pids[@]}"
+      return
+    fi
+  fi
+}
+
+wait_for_port() {
+  local port="$1"
+  local expect="$2"
+  local attempts=0
+  while (( attempts < 40 )); do
+    local count
+    count="$(gateway_listener_pids "$port" | wc -l | tr -d ' ')"
+    if [[ "$expect" == "up" && "$count" -gt 0 ]]; then
+      return 0
+    fi
+    if [[ "$expect" == "down" && "$count" -eq 0 ]]; then
+      return 0
+    fi
+    sleep 0.25
+    attempts=$((attempts + 1))
+  done
+  return 1
+}
+
+kill_listener_processes() {
+  local port="$1"
+  local pids
+  pids="$(gateway_listener_pids "$port")"
+
+  if [[ -z "$pids" ]]; then
+    return 0
+  fi
+
+  echo "Killing processes on port ${port}:"
+  while IFS= read -r pid; do
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      echo "  pid=${pid}"
+      kill "$pid" 2>/dev/null || true
+    fi
+  done <<< "$pids"
+
+  if wait_for_port "$port" "down"; then
+    return 0
+  fi
+
+  while IFS= read -r pid; do
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      echo "  force kill pid=${pid}"
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  done <<< "$pids"
+}
+
+run_gateway_stop() {
+  local cfg="$1"
+  echo "Attempting gateway stop via CLI."
+  if (cd "$REPO_ROOT" && OPENCLAW_CONFIG_PATH="$cfg" "${OPENCLAW_BIN}" gateway stop) >/dev/null 2>&1; then
+    return 0
+  fi
+  return 0
+}
+
+run_gateway_start() {
+  local cfg="$1"
+  local log="$2"
+  local port
+  port="$(resolve_gateway_port "$cfg")"
+  mkdir -p "$(dirname "$log")"
+  kill_listener_processes "$port" || true
+
+  echo "Starting gateway with config: ${cfg}"
+  (
+    cd "$REPO_ROOT"
+    export OPENCLAW_CONFIG_PATH="$cfg"
+    nohup "${OPENCLAW_BIN}" gateway run --force >> "$log" 2>&1 &
+  )
+  if ! wait_for_port "$port" "up"; then
+    echo "Gateway may not be ready yet. Check log: ${log}" >&2
+    return 1
+  fi
+  echo "Gateway started. Log: ${log}"
+}
+
+status() {
+  local cfg="$1"
+  local port
+  port="$(resolve_gateway_port "$cfg")"
+  echo "Checking openclaw gateway status."
+  local status_file="$(mktemp)"
+  if ! (cd "$REPO_ROOT" && OPENCLAW_CONFIG_PATH="$cfg" "${OPENCLAW_BIN}" gateway status --json --no-probe >"$status_file" 2>/dev/null); then
+    echo "gateway status (cli): unavailable"
+  else
+    local line
+    line="$(cat "$status_file" 2>/dev/null | tr '\n' ' ')"
+    echo "gateway status (cli): ${line}"
+  fi
+  rm -f "$status_file"
+
+  local pids
+  pids="$(gateway_listener_pids "$port")"
+  if [[ -n "$pids" ]]; then
+    echo "listener on port ${port}:"
+    echo "$pids" | sed "s/^/  pid=/"
+  else
+    echo "no listener on port ${port}"
+  fi
+}
+
+run_gateway_stop_and_wait() {
+  local cfg="$1"
+  run_gateway_stop "$cfg" || true
+  local port
+  port="$(resolve_gateway_port "$cfg")"
+  if wait_for_port "$port" "down"; then
+    return 0
+  fi
+  kill_listener_processes "$port" || true
+}
+
+while (($# > 0)); do
+  case "$1" in
+    restart|start|stop|status|kill)
+      ACTION="$1"
+      shift
+      ;;
+    openclaw-restart|openclaw_restart)
+      shift
+      ;;
+    --config)
+      if (($# < 2)); then
+        echo "--config requires a value" >&2
+        exit 1
+      fi
+      CONFIG_PATH="$2"
+      shift 2
+      ;;
+    --config=*)
+      CONFIG_PATH="${1#*=}"
+      shift
+      ;;
+    --log)
+      if (($# < 2)); then
+        echo "--log requires a value" >&2
+        exit 1
+      fi
+      LOG_PATH="$2"
+      shift 2
+      ;;
+    --log=*)
+      LOG_PATH="${1#*=}"
+      shift
+      ;;
+    -h|--help|help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$CONFIG_PATH" == "" ]]; then
+  CONFIG_PATH="$DEFAULT_CONFIG"
+fi
+
+if [[ ! -x "$OPENCLAW_BIN" ]]; then
+  echo "openclaw.mjs not found: ${OPENCLAW_BIN}" >&2
+  exit 1
+fi
+
+require_command node
+
+case "$ACTION" in
+  restart)
+    run_gateway_stop_and_wait "$CONFIG_PATH"
+    if run_gateway_start "$CONFIG_PATH" "$LOG_PATH"; then
+      echo "restart: ok"
+    else
+      echo "restart: failed"
+      exit 1
+    fi
+    ;;
+  start)
+    if run_gateway_start "$CONFIG_PATH" "$LOG_PATH"; then
+      echo "start: ok"
+    else
+      echo "start: failed"
+      exit 1
+    fi
+    ;;
+  stop)
+    run_gateway_stop_and_wait "$CONFIG_PATH"
+    echo "stop: ok"
+    ;;
+  kill)
+    kill_listener_processes "$(resolve_gateway_port "$CONFIG_PATH")"
+    echo "kill: ok"
+    ;;
+  status)
+    status "$CONFIG_PATH"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

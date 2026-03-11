@@ -1,10 +1,15 @@
 ---
 name: openclaw-version-bump
+<<<<<<< Updated upstream
 description: OpenClaw 仓库版本同步技能。统一查看/更新核心版本号文件，支持 dry-run 预览与批量写入。
 metadata:
   {
     "openclaw": { "emoji": "🛠️", "requires": { "bins": ["python3"] }, "notes": ["仅在仓库内执行"] },
   }
+=======
+description: Check local and remote OpenClaw versions.
+metadata: '{ "openclaw": { "emoji": "⬆️" } }'
+>>>>>>> Stashed changes
 command-dispatch: tool
 command-tool: exec
 command-arg-mode: raw
@@ -12,6 +17,8 @@ disable-model-invocation: true
 
 user-invocable: true
 ---
+
+<<<<<<< Updated upstream
 
 # OpenClaw 版本更新 Skill
 
@@ -143,4 +150,17 @@ latest_version_without_prefix=2026.3.8
 ## 安全边界
 
 - 未匹配到目标文件/字段会直接报错，不会静默跳过。
-- 不能解析目标版本文件时会退出，避免写坏仓库状态。
+- # 不能解析目标版本文件时会退出，避免写坏仓库状态。
+
+# OpenClaw Version Bump
+
+用于查看当前仓库版本与远端最新可用版本。
+
+默认执行：读取本地 `package.json` 版本与 git 标签最新版本。
+
+## 命令
+
+- `/openclaw_version_bump` 仅查询（默认）
+- `/openclaw_version_bump latest` 显示远端最新版本
+- `/openclaw_version_bump current` 显示本地版本
+  > > > > > > > Stashed changes
