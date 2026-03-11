@@ -817,6 +817,93 @@ describe("sessions tools", () => {
     });
   });
 
+  it("sessions_send keeps polling in the background after an initial timeout", async () => {
+    const calls: Array<{ method?: string; params?: unknown }> = [];
+    let agentCallCount = 0;
+    let lastWaitedRunId: string | undefined;
+    const replyByRunId = new Map<string, string>();
+    const waitCountByRunId = new Map<string, number>();
+    const requesterKey = "discord:group:req";
+
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string; params?: unknown };
+      calls.push(request);
+      if (request.method === "agent") {
+        agentCallCount += 1;
+        const runId = `run-${agentCallCount}`;
+        const params = request.params as
+          | {
+              message?: string;
+              sessionKey?: string;
+              extraSystemPrompt?: string;
+            }
+          | undefined;
+        let reply = "background reply";
+        if (params?.extraSystemPrompt?.includes("Agent-to-agent reply step")) {
+          reply = "REPLY_SKIP";
+        }
+        if (params?.extraSystemPrompt?.includes("Agent-to-agent announce step")) {
+          reply = "ANNOUNCE_SKIP";
+        }
+        replyByRunId.set(runId, reply);
+        return { runId, status: "accepted" };
+      }
+      if (request.method === "agent.wait") {
+        const params = request.params as { runId?: string } | undefined;
+        const runId = params?.runId ?? "run-1";
+        lastWaitedRunId = runId;
+        const count = (waitCountByRunId.get(runId) ?? 0) + 1;
+        waitCountByRunId.set(runId, count);
+        if (runId === "run-1" && count === 1) {
+          return { runId, status: "timeout", error: "still running" };
+        }
+        return { runId, status: "ok" };
+      }
+      if (request.method === "chat.history") {
+        const text = (lastWaitedRunId && replyByRunId.get(lastWaitedRunId)) ?? "";
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text }],
+              timestamp: 20,
+            },
+          ],
+        };
+      }
+      if (request.method === "send") {
+        return { messageId: "m-bg" };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: requesterKey,
+      agentChannel: "discord",
+    }).find((candidate) => candidate.name === "sessions_send");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing sessions_send tool");
+    }
+
+    const result = await tool.execute("call8", {
+      sessionKey: "main",
+      message: "slow",
+      timeoutSeconds: 1,
+    });
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      delivery: { status: "pending", mode: "announce", backgroundWait: true },
+    });
+    expect((result.details as { note?: string }).note).toContain("still processing");
+
+    await waitForCalls(() => calls.filter((call) => call.method === "agent.wait").length, 4);
+    await waitForCalls(() => calls.filter((call) => call.method === "agent").length, 3);
+    await waitForCalls(() => calls.filter((call) => call.method === "chat.history").length, 3);
+
+    expect(waitCountByRunId.get("run-1")).toBeGreaterThanOrEqual(2);
+  });
+
   it("subagents lists active and recent runs", async () => {
     resetSubagentRegistryForTests();
     const now = Date.now();

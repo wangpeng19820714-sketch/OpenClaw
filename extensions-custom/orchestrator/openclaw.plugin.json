@@ -1,0 +1,210 @@
+{
+  "id": "orchestrator",
+  "name": "Orchestrator",
+  "description": "Minimal runnable v1 for 24x7 agent-defined workflow execution on top of OpenClaw sessions and subagents.",
+  "uiHints": {
+    "pollIntervalMs": {
+      "label": "Poll Interval",
+      "help": "How often the background orchestrator loop scans for runnable workflows.",
+      "placeholder": "5000"
+    },
+    "leaseTtlMs": {
+      "label": "Lease TTL",
+      "help": "How long a worker lease is valid before the orchestrator can recover a stuck workflow.",
+      "placeholder": "60000"
+    },
+    "maxConcurrentWorkflows": {
+      "label": "Concurrent Workflows",
+      "help": "Maximum workflows the orchestrator may execute at once.",
+      "placeholder": "4"
+    },
+    "maxConcurrentSteps": {
+      "label": "Concurrent Steps",
+      "help": "Maximum workflow steps the orchestrator may execute at once.",
+      "placeholder": "8"
+    },
+    "defaultRunTimeoutSeconds": {
+      "label": "Default Step Timeout",
+      "help": "Default timeout for agent-run steps when the workflow omits one.",
+      "placeholder": "900"
+    },
+    "defaultRetryLimit": {
+      "label": "Default Retry Limit",
+      "help": "Default max retries for steps when the workflow omits one.",
+      "placeholder": "1"
+    },
+    "allowedTargetAgents": {
+      "label": "Allowed Target Agents",
+      "help": "Optional allowlist of agents that workflows may dispatch to.",
+      "placeholder": "[\"pm\", \"ba\", \"server\"]"
+    },
+    "allowedSubmitterAgents": {
+      "label": "Allowed Submitter Agents",
+      "help": "Optional allowlist of agents that may submit workflows.",
+      "advanced": true,
+      "placeholder": "[\"ba\", \"pm\"]"
+    },
+    "workerOnlyAgents": {
+      "label": "Worker-only Agents",
+      "help": "Agents that may execute workflow steps but are not allowed to submit workflows.",
+      "advanced": true,
+      "placeholder": "[\"server\"]"
+    },
+    "allowedStepKinds": {
+      "label": "Allowed Step Kinds",
+      "help": "Optional global allowlist of workflow step kinds.",
+      "advanced": true,
+      "placeholder": "[\"agent_run\", \"agent_message\", \"fan_out\", \"tool_call\", \"condition\"]"
+    },
+    "submitterPolicies": {
+      "label": "Submitter Policies",
+      "help": "Per-agent workflow submission restrictions such as allowed step kinds or target agents.",
+      "advanced": true,
+      "placeholder": "{\"pm\":{\"allowedStepKinds\":[\"agent_run\"],\"allowedTargetAgents\":[\"ba\"]}}"
+    },
+    "memory": {
+      "label": "Mem0 Integration",
+      "help": "Optional Mem0 bridge for planner context lookup and workflow result journaling.",
+      "advanced": true,
+      "placeholder": "{\"enabled\":true,\"baseUrl\":\"http://127.0.0.1:8888\"}"
+    },
+    "cleanupCompletedAfterHours": {
+      "label": "Cleanup Window",
+      "help": "How long to retain completed workflow records before cleanup.",
+      "advanced": true,
+      "placeholder": "168"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "pollIntervalMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 600000
+      },
+      "leaseTtlMs": {
+        "type": "number",
+        "minimum": 5000,
+        "maximum": 3600000
+      },
+      "maxConcurrentWorkflows": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 64
+      },
+      "maxConcurrentSteps": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 128
+      },
+      "defaultRunTimeoutSeconds": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 86400
+      },
+      "defaultRetryLimit": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 10
+      },
+      "allowedTargetAgents": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "allowedSubmitterAgents": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "workerOnlyAgents": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "allowedStepKinds": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "agent_run",
+            "session_message",
+            "agent_message",
+            "wait",
+            "tool_call",
+            "condition",
+            "fan_out"
+          ]
+        }
+      },
+      "submitterPolicies": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allowedStepKinds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "agent_run",
+                  "session_message",
+                  "agent_message",
+                  "wait",
+                  "tool_call",
+                  "condition",
+                  "fan_out"
+                ]
+              }
+            },
+            "allowedTargetAgents": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "memory": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "baseUrl": {
+            "type": "string"
+          },
+          "requestTimeoutMs": {
+            "type": "number",
+            "minimum": 1000,
+            "maximum": 300000
+          },
+          "planningTopK": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "writeCompletedSummaries": {
+            "type": "boolean"
+          },
+          "writeFailureMemories": {
+            "type": "boolean"
+          }
+        }
+      },
+      "cleanupCompletedAfterHours": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 8760
+      }
+    }
+  }
+}

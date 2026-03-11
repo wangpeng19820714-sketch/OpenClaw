@@ -24,6 +24,8 @@ import {
 import { buildAgentToAgentMessageContext, resolvePingPongTurns } from "./sessions-send-helpers.js";
 import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
 
+const DEFAULT_SESSIONS_SEND_TIMEOUT_SECONDS = 60;
+
 const SessionsSendToolSchema = Type.Object({
   sessionKey: Type.Optional(Type.String()),
   label: Type.Optional(Type.String({ minLength: 1, maxLength: SESSION_LABEL_MAX_LENGTH })),
@@ -191,7 +193,7 @@ export function createSessionsSendTool(opts?: {
       const timeoutSeconds =
         typeof params.timeoutSeconds === "number" && Number.isFinite(params.timeoutSeconds)
           ? Math.max(0, Math.floor(params.timeoutSeconds))
-          : 30;
+          : DEFAULT_SESSIONS_SEND_TIMEOUT_SECONDS;
       const timeoutMs = timeoutSeconds * 1000;
       const announceTimeoutMs = timeoutSeconds === 0 ? 30_000 : timeoutMs;
       const idempotencyKey = crypto.randomUUID();
@@ -315,20 +317,43 @@ export function createSessionsSendTool(opts?: {
       } catch (err) {
         const messageText =
           err instanceof Error ? err.message : typeof err === "string" ? err : "error";
+        const timedOut = messageText.includes("gateway timeout") || /timed? out/i.test(messageText);
+        if (timedOut) {
+          startA2AFlow(undefined, runId);
+          return jsonResult({
+            runId,
+            status: "accepted",
+            sessionKey: displayKey,
+            delivery: {
+              ...delivery,
+              status: "pending",
+              backgroundWait: true,
+            },
+            note: "Message delivered; target session is still processing in the background.",
+          });
+        }
         return jsonResult({
           runId,
-          status: messageText.includes("gateway timeout") ? "timeout" : "error",
+          status: "error",
           error: messageText,
           sessionKey: displayKey,
         });
       }
 
       if (waitStatus === "timeout") {
+        startA2AFlow(undefined, runId);
         return jsonResult({
           runId,
-          status: "timeout",
-          error: waitError,
+          status: "accepted",
           sessionKey: displayKey,
+          delivery: {
+            ...delivery,
+            status: "pending",
+            backgroundWait: true,
+          },
+          note: waitError?.trim()
+            ? `Message delivered; target session is still processing in the background (${waitError}).`
+            : "Message delivered; target session is still processing in the background.",
         });
       }
       if (waitStatus === "error") {

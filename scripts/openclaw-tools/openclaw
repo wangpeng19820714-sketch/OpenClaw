@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_CONFIG="${REPO_ROOT}/configs/openclaw.json"
+BOOTSTRAP_OPENCLAW="${HOME}/.openclaw/bootstrap/npm-global/node_modules/.bin/openclaw"
+
+require_command() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Missing required binary: ${cmd}" >&2
+    exit 1
+  fi
+}
+
+require_command node
+
+if [[ -f "${REPO_ROOT}/openclaw.mjs" ]]; then
+  OPENCLAW_BIN="${REPO_ROOT}/openclaw.mjs"
+  OPENCLAW_CMD="node ${OPENCLAW_BIN}"
+elif [[ -x "${BOOTSTRAP_OPENCLAW}" ]]; then
+  OPENCLAW_CMD="${BOOTSTRAP_OPENCLAW}"
+else
+  echo "Could not find OpenClaw CLI in repo or bootstrap cache." >&2
+  echo "Tried: ${REPO_ROOT}/openclaw.mjs and ${BOOTSTRAP_OPENCLAW}" >&2
+  exit 1
+fi
+
+if [[ -f "${REPO_CONFIG}" ]]; then
+  OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-${REPO_CONFIG}}"
+else
+  OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-${HOME}/.openclaw/openclaw.json}"
+fi
+
+export OPENCLAW_CONFIG_PATH
+
+cd "${REPO_ROOT}"
+if [[ "$OPENCLAW_CMD" == node* ]]; then
+  eval "${OPENCLAW_CMD}" "$@"
+else
+  "$OPENCLAW_CMD" "$@"
+fi
+

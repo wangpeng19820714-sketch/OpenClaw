@@ -114,24 +114,8 @@ describe("loadModelCatalog", () => {
     expect(spark?.reasoning).toBe(true);
   });
 
-  it("adds gpt-5.4 forward-compat catalog entries when template models exist", async () => {
+  it("adds openai-codex/gpt-5.4 when a codex base model exists", async () => {
     mockPiDiscoveryModels([
-      {
-        id: "gpt-5.2",
-        provider: "openai",
-        name: "GPT-5.2",
-        reasoning: true,
-        contextWindow: 1_050_000,
-        input: ["text", "image"],
-      },
-      {
-        id: "gpt-5.2-pro",
-        provider: "openai",
-        name: "GPT-5.2 Pro",
-        reasoning: true,
-        contextWindow: 1_050_000,
-        input: ["text", "image"],
-      },
       {
         id: "gpt-5.3-codex",
         provider: "openai-codex",
@@ -140,31 +124,23 @@ describe("loadModelCatalog", () => {
         contextWindow: 272000,
         input: ["text", "image"],
       },
+      {
+        id: "gpt-5.2-codex",
+        provider: "openai-codex",
+        name: "GPT-5.2 Codex",
+      },
     ]);
 
     const result = await loadModelCatalog({ config: {} as OpenClawConfig });
-
-    expect(result).toContainEqual(
-      expect.objectContaining({
-        provider: "openai",
-        id: "gpt-5.4",
-        name: "gpt-5.4",
-      }),
-    );
-    expect(result).toContainEqual(
-      expect.objectContaining({
-        provider: "openai",
-        id: "gpt-5.4-pro",
-        name: "gpt-5.4-pro",
-      }),
-    );
     expect(result).toContainEqual(
       expect.objectContaining({
         provider: "openai-codex",
         id: "gpt-5.4",
-        name: "gpt-5.4",
       }),
     );
+    const fallback = result.find((entry) => entry.id === "gpt-5.4");
+    expect(fallback?.name).toBe("gpt-5.4");
+    expect(fallback?.reasoning).toBe(true);
   });
 
   it("merges configured models for opted-in non-pi-native providers", async () => {
@@ -238,9 +214,9 @@ describe("loadModelCatalog", () => {
   it("does not duplicate opted-in configured models already present in ModelRegistry", async () => {
     mockPiDiscoveryModels([
       {
-        id: "kilo/auto",
+        id: "anthropic/claude-opus-4.6",
         provider: "kilocode",
-        name: "Kilo Auto",
+        name: "Claude Opus 4.6",
       },
     ]);
 
@@ -253,8 +229,8 @@ describe("loadModelCatalog", () => {
               api: "openai-completions",
               models: [
                 {
-                  id: "kilo/auto",
-                  name: "Configured Kilo Auto",
+                  id: "anthropic/claude-opus-4.6",
+                  name: "Configured Claude Opus 4.6",
                   reasoning: true,
                   input: ["text", "image"],
                   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -269,9 +245,9 @@ describe("loadModelCatalog", () => {
     });
 
     const matches = result.filter(
-      (entry) => entry.provider === "kilocode" && entry.id === "kilo/auto",
+      (entry) => entry.provider === "kilocode" && entry.id === "anthropic/claude-opus-4.6",
     );
     expect(matches).toHaveLength(1);
-    expect(matches[0]?.name).toBe("Kilo Auto");
+    expect(matches[0]?.name).toBe("Claude Opus 4.6");
   });
 });

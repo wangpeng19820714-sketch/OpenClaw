@@ -1,0 +1,22 @@
+{
+  "name": "@openclaw/orchestrator",
+  "version": "0.1.0",
+  "description": "Minimal runnable agent-defined workflow orchestrator plugin",
+  "keywords": [
+    "multi-agent",
+    "openclaw",
+    "orchestrator",
+    "plugin",
+    "workflow"
+  ],
+  "license": "Apache-2.0",
+  "type": "module",
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

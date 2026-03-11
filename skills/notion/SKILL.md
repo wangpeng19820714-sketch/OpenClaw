@@ -17,21 +17,56 @@ Use the Notion API to create/read/update pages, data sources (databases), and bl
 
 1. Create an integration at https://notion.so/my-integrations
 2. Copy the API key (starts with `ntn_` or `secret_`)
-3. Store it:
+3. Prefer the `NOTION_API_KEY` environment variable when it is already configured by the host app or agent runtime.
+4. If `NOTION_API_KEY` is not available, you may store the key locally:
 
 ```bash
 mkdir -p ~/.config/notion
 echo "ntn_your_key_here" > ~/.config/notion/api_key
 ```
 
-4. Share target pages/databases with your integration (click "..." → "Connect to" → your integration name)
+5. Share target pages/databases with your integration (click "..." → "Connect to" → your integration name)
 
 ## API Basics
 
-All requests need:
+All requests need a Notion API key.
+
+## Key Resolution (do this first)
+
+Before claiming the key is missing, resolve it in this order:
+
+1. Check the live process environment:
 
 ```bash
-NOTION_KEY=$(cat ~/.config/notion/api_key)
+printenv NOTION_API_KEY
+```
+
+2. If empty, check OpenClaw env files that are commonly loaded by the runtime:
+
+```bash
+rg -n '^NOTION_API_KEY=' .env ~/.openclaw/.env 2>/dev/null
+```
+
+3. If still empty, check OpenClaw skill config:
+
+```bash
+node -e "const fs=require('fs'); const p=process.env.OPENCLAW_CONFIG_PATH || 'configs/openclaw.json'; const c=JSON.parse(fs.readFileSync(p,'utf8')); console.log(c.skills?.entries?.notion?.apiKey || '')"
+```
+
+4. If the config value is literally `${NOTION_API_KEY}`, that means the runtime is expected to provide the env var and you should rely on `printenv NOTION_API_KEY`, not on the raw config file.
+
+5. Only if none of the above work, fall back to a local file:
+
+```bash
+cat ~/.config/notion/api_key
+```
+
+Do not treat `~/.env` as a canonical OpenClaw Notion key location.
+
+Once resolved, set:
+
+```bash
+NOTION_KEY="${NOTION_API_KEY:-$(cat ~/.config/notion/api_key 2>/dev/null)}"
 curl -X GET "https://api.notion.com/v1/..." \
   -H "Authorization: Bearer $NOTION_KEY" \
   -H "Notion-Version: 2025-09-03" \
@@ -41,6 +76,18 @@ curl -X GET "https://api.notion.com/v1/..." \
 > **Note:** The `Notion-Version` header is required. This skill uses `2025-09-03` (latest). In this version, databases are called "data sources" in the API.
 
 ## Common Operations
+
+**If the user gives you a `database_id`, do not query it directly as a data source. First resolve the backing `data_source_id`:**
+
+```bash
+curl "https://api.notion.com/v1/databases/{database_id}" \
+  -H "Authorization: Bearer $NOTION_KEY" \
+  -H "Notion-Version: 2025-09-03"
+```
+
+Then read `data_sources[0].id` from the response and use that value with `/v1/data_sources/{data_source_id}/query`.
+
+Rule: when the input ID came from a Notion page URL or is described as a "database id", treat it as `database_id` first, resolve `data_source_id`, then query.
 
 **Search for pages and data sources:**
 
@@ -96,6 +143,8 @@ curl -X POST "https://api.notion.com/v1/data_sources/{data_source_id}/query" \
     "sorts": [{"property": "Date", "direction": "descending"}]
   }'
 ```
+
+Do not send `database_id` directly to `/v1/data_sources/{id}/query` unless you already verified that the ID is actually a `data_source_id`.
 
 **Create a data source (database):**
 

@@ -1,0 +1,21 @@
+{
+  "name": "@openclaw/mem0",
+  "version": "0.1.0",
+  "description": "Thin OpenClaw bridge plugin for an external upstream Mem0 server",
+  "keywords": [
+    "mem0",
+    "memory",
+    "openclaw",
+    "plugin"
+  ],
+  "license": "Apache-2.0",
+  "type": "module",
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

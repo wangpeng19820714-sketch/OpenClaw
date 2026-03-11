@@ -34,6 +34,8 @@ export const DEFAULT_MEMORY_ALT_FILENAME = "memory.md";
 const WORKSPACE_STATE_DIRNAME = ".openclaw";
 const WORKSPACE_STATE_FILENAME = "workspace-state.json";
 const WORKSPACE_STATE_VERSION = 1;
+const DEFAULT_DAILY_MEMORY_HEADING = "# Daily memory";
+const DEFAULT_MEMORY_HEADING = "# Long-term memory";
 
 const workspaceTemplateCache = new Map<string, Promise<string>>();
 let gitAvailabilityPromise: Promise<boolean> | null = null;
@@ -275,6 +277,15 @@ async function writeWorkspaceOnboardingState(
   }
 }
 
+function getWorkspaceLocalDateStamp(now = new Date()): string {
+  return now.toLocaleDateString("en-CA");
+}
+
+function resolveTodayMemoryPath(dir: string, now = new Date()): string {
+  const dateStamp = getWorkspaceLocalDateStamp(now);
+  return path.join(dir, "memory", `${dateStamp}.md`);
+}
+
 async function hasGitRepo(dir: string): Promise<boolean> {
   try {
     await fs.stat(path.join(dir, ".git"));
@@ -347,6 +358,8 @@ export async function ensureAgentWorkspace(params?: {
   const heartbeatPath = path.join(dir, DEFAULT_HEARTBEAT_FILENAME);
   const bootstrapPath = path.join(dir, DEFAULT_BOOTSTRAP_FILENAME);
   const statePath = resolveWorkspaceStatePath(dir);
+  const memoryPath = path.join(dir, DEFAULT_MEMORY_FILENAME);
+  const memoryDirPath = path.join(dir, "memory");
 
   const isBrandNewWorkspace = await (async () => {
     const templatePaths = [agentsPath, soulPath, toolsPath, identityPath, userPath, heartbeatPath];
@@ -444,6 +457,10 @@ export async function ensureAgentWorkspace(params?: {
   if (stateDirty) {
     await writeWorkspaceOnboardingState(statePath, state);
   }
+
+  await fs.mkdir(memoryDirPath, { recursive: true });
+  await writeFileIfMissing(memoryPath, `${DEFAULT_MEMORY_HEADING}\n\n`);
+  await writeFileIfMissing(resolveTodayMemoryPath(dir), `${DEFAULT_DAILY_MEMORY_HEADING}\n\n`);
   await ensureGitRepo(dir, isBrandNewWorkspace);
 
   return {

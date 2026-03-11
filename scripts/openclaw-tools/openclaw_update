@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ $# -gt 0 ]]; then
+  case "${1#/}" in
+    openclaw_update|openclaw-update)
+      shift
+      ;;
+  esac
+fi
+
+"${SCRIPT_DIR}/openclaw" "$@"

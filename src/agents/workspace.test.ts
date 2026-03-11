@@ -59,6 +59,10 @@ async function expectCompletedWithoutBootstrap(dir: string) {
   expect(state.onboardingCompletedAt).toMatch(/\d{4}-\d{2}-\d{2}T/);
 }
 
+function localDateStamp(): string {
+  return new Date().toLocaleDateString("en-CA");
+}
+
 function expectSubagentAllowedBootstrapNames(files: WorkspaceBootstrapFile[]) {
   const names = files.map((file) => file.name);
   expect(names).toContain("AGENTS.md");
@@ -79,6 +83,21 @@ describe("ensureAgentWorkspace", () => {
 
     await expectBootstrapSeeded(tempDir);
     expect((await readOnboardingState(tempDir)).onboardingCompletedAt).toBeUndefined();
+  });
+
+  it("creates default memory files when bootstrapping", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-");
+
+    await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: true });
+
+    const today = localDateStamp();
+    const dailyMemoryPath = path.join(tempDir, "memory", `${today}.md`);
+    await expect(fs.access(path.join(tempDir, "MEMORY.md"))).resolves.toBeUndefined();
+    await expect(fs.access(dailyMemoryPath)).resolves.toBeUndefined();
+    await expect(fs.readFile(path.join(tempDir, "MEMORY.md"), "utf-8")).resolves.toBe(
+      "# Long-term memory\n\n",
+    );
+    await expect(fs.readFile(dailyMemoryPath, "utf-8")).resolves.toBe("# Daily memory\n\n");
   });
 
   it("recovers partial initialization by creating BOOTSTRAP.md when marker is missing", async () => {

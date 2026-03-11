@@ -1,0 +1,88 @@
+name: openclaw-mem0
+
+services:
+  mem0:
+    build:
+      context: ${OPENCLAW_MEM0_UPSTREAM_DIR}
+      dockerfile: server/dev.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    command:
+      - /bin/sh
+      - -lc
+      - pip install --no-cache-dir 'psycopg[binary,pool]' ollama >/tmp/mem0-bootstrap.log 2>&1 && uvicorn main:app --host 0.0.0.0 --port 8000
+    environment:
+      OPENAI_API_KEY: local-bootstrap-placeholder
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_COLLECTION_NAME: openclaw_memories_upstream
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: mem0graph
+      HISTORY_DB_PATH: /app/history/history.db
+    ports:
+      - "127.0.0.1:8888:8000"
+    volumes:
+      - ${OPENCLAW_MEM0_STATE_DIR}/history:/app/history
+      - ./mem0-openclaw/overrides/main.py:/app/main.py:ro
+      - ./mem0-openclaw/overrides/ollama.py:/app/packages/mem0/embeddings/ollama.py:ro
+    networks:
+      - mem0_network
+
+  postgres:
+    image: ankane/pgvector:v0.5.1
+    restart: unless-stopped
+    shm_size: "128mb"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD", "pg_isready", "-q", "-d", "postgres", "-U", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - ${OPENCLAW_MEM0_STATE_DIR}/postgres:/var/lib/postgresql/data
+    networks:
+      - mem0_network
+
+  neo4j:
+    image: neo4j:5.26.4
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/mem0graph
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_apoc_export_file_enabled: "true"
+      NEO4J_apoc_import_file_enabled: "true"
+      NEO4J_apoc_import_file_use__neo4j__config: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    volumes:
+      - ${OPENCLAW_MEM0_STATE_DIR}/neo4j:/data
+    networks:
+      - mem0_network
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ${OPENCLAW_MEM0_STATE_DIR}/ollama:/root/.ollama
+    networks:
+      - mem0_network
+
+networks:
+  mem0_network:
+    driver: bridge
