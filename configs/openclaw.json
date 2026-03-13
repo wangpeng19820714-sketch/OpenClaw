@@ -325,9 +325,12 @@
     }
   },
   "plugins": {
-    "allow": ["feishu", "google-gemini-cli-auth", "device-pair", "mem0"],
+    "allow": ["feishu", "google-gemini-cli-auth", "device-pair", "mem0", "orchestrator"],
     "load": {
-      "paths": ["/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/mem0-openclaw"]
+      "paths": [
+        "/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/mem0-openclaw",
+        "/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/orchestrator"
+      ]
     },
     "slots": {
       "memory": "mem0"
@@ -345,6 +348,18 @@
           "baseUrl": "http://127.0.0.1:8888",
           "topK": 5,
           "requestTimeoutMs": 120000
+        }
+      },
+      "orchestrator": {
+        "enabled": true,
+        "config": {
+          "pollIntervalMs": 5000,
+          "leaseTtlMs": 60000,
+          "maxConcurrentWorkflows": 2,
+          "maxConcurrentSteps": 4,
+          "defaultRunTimeoutSeconds": 300,
+          "defaultRetryLimit": 1,
+          "allowedTargetAgents": ["pm", "ba", "client", "main", "server"]
         }
       }
     }
