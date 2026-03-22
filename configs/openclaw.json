@@ -342,11 +342,20 @@
     }
   },
   "plugins": {
-    "allow": ["feishu", "google-gemini-cli-auth", "device-pair", "mem0", "orchestrator", "acpx"],
+    "allow": [
+      "feishu",
+      "google-gemini-cli-auth",
+      "device-pair",
+      "mem0",
+      "orchestrator",
+      "lobster-release",
+      "acpx"
+    ],
     "load": {
       "paths": [
         "/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/mem0-openclaw",
-        "/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/orchestrator"
+        "/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/orchestrator",
+        "/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/lobster-release"
       ]
     },
     "slots": {
@@ -377,6 +386,31 @@
           "defaultRunTimeoutSeconds": 300,
           "defaultRetryLimit": 1,
           "allowedTargetAgents": ["pm", "ba", "client", "main", "server"]
+        }
+      },
+      "lobster-release": {
+        "enabled": true,
+        "config": {
+          "defaultProjectKey": "gamexpert",
+          "defaultEnvironment": "staging",
+          "defaultChannel": "beta",
+          "routePrefix": "/plugins/lobster-release/api",
+          "ciRoutePrefix": "/api/ci/v1",
+          "publicBaseUrl": "${LOBSTER_PUBLIC_BASE_URL}",
+          "ciApiKey": "${LOBSTER_CI_API_KEY}",
+          "ciApiSecret": "${LOBSTER_CI_API_SECRET}",
+          "jenkinsBaseUrl": "${LOBSTER_JENKINS_BASE_URL}",
+          "jenkinsJob": "GameXpert_Godot_CI",
+          "jenkinsUser": "${LOBSTER_JENKINS_USER}",
+          "jenkinsApiToken": "${LOBSTER_JENKINS_API_TOKEN}",
+          "jenkinsLobsterApiKeyCredentialsId": "lobster-api-key",
+          "jenkinsLobsterApiSecretCredentialsId": "lobster-api-secret",
+          "jenkinsAndroidKeystoreBase64CredentialsId": "gamexpert-android-keystore-base64",
+          "jenkinsAndroidKeystoreAliasCredentialsId": "gamexpert-android-keystore-alias",
+          "jenkinsAndroidKeystorePasswordCredentialsId": "gamexpert-android-keystore-password",
+          "uploadDestinationDir": "${LOBSTER_UPLOAD_DESTINATION_DIR}",
+          "uploadBaseUrl": "${LOBSTER_UPLOAD_BASE_URL}",
+          "autoPublishDev": true
         }
       },
       "acpx": {
