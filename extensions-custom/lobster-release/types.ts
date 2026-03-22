@@ -45,6 +45,8 @@ export type ArtifactType =
   | "manifest"
   | "sha256";
 export type LockScope = "channel" | "release" | "build" | "rollback";
+export type NotificationStatus = "pending" | "sending" | "sent" | "failed";
+export type NotificationChannel = "feishu";
 
 export type ProjectRecord = {
   projectId: string;
@@ -195,6 +197,26 @@ export type EventLogRecord = {
   payload: Record<string, unknown>;
   createdBy?: string;
   createdAt: string;
+};
+
+export type NotificationOutboxRecord = {
+  notificationId: string;
+  eventId: string;
+  projectId: string;
+  projectKey: string;
+  environment?: ReleaseEnvironment;
+  channel?: ReleaseChannel;
+  eventType: string;
+  deliveryChannel: NotificationChannel;
+  status: NotificationStatus;
+  dedupeKey: string;
+  payload: Record<string, unknown>;
+  attemptCount: number;
+  lastError?: string;
+  claimedAt?: string;
+  sentAt?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ReleaseRelationRecord = {

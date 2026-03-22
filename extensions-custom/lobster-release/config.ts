@@ -4,6 +4,10 @@ export type LobsterReleaseConfig = {
   defaultProjectKey: string;
   routePrefix: string;
   ciRoutePrefix: string;
+  notifierSessionKey?: string;
+  notifierChannel?: string;
+  notifierTarget?: string;
+  notifierAccountId?: string;
   publicBaseUrl?: string;
   callbackToken?: string;
   ciApiKey?: string;
@@ -43,6 +47,10 @@ export function resolveLobsterReleaseConfig(raw: unknown): LobsterReleaseConfig 
     routePrefix:
       asNonEmptyString(input.routePrefix)?.replace(/\/+$/, "") ?? "/plugins/lobster-release/api",
     ciRoutePrefix: asNonEmptyString(input.ciRoutePrefix)?.replace(/\/+$/, "") ?? "/api/ci/v1",
+    notifierSessionKey: asNonEmptyString(input.notifierSessionKey),
+    notifierChannel: asNonEmptyString(input.notifierChannel),
+    notifierTarget: asNonEmptyString(input.notifierTarget),
+    notifierAccountId: asNonEmptyString(input.notifierAccountId),
     publicBaseUrl: asNonEmptyString(input.publicBaseUrl)?.replace(/\/+$/, ""),
     callbackToken: asNonEmptyString(input.callbackToken),
     ciApiKey: asNonEmptyString(input.ciApiKey),

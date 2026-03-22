@@ -22,6 +22,16 @@ This document records the current live integration status of `lobster-release`, 
 - Re-approving an already published release is idempotent and does not corrupt `previousReleaseId`.
 - Jenkins callback provenance now reuses the trigger-created build instead of creating a duplicate build.
 - Jenkins callback provenance now preserves baseline information even if callback payloads contain blank baseline fields.
+- Rollback now rewrites the target release manifest after channel pointer switch.
+- Rollback now marks the source release as `rolled_back` and can freeze the incident release.
+- Rollback now blocks incompatible targets when `minClientVersion` or `resourceProtocolVersion` would regress.
+- Failed build completion now leaves the release in `failed` state and does not publish the channel.
+- Notification outbox is now implemented for `release.awaiting_approval`, `release.published`, `build.failed`, `build.canceled`, and `rollback.completed`.
+- `lobster-release` now exposes notifier agent tools:
+  - `release_notifications_drain`
+  - `release_notifications_pull`
+  - `release_notifications_ack`
+  - `release_notifications_fail`
 
 ## Live Validation Results
 
@@ -76,19 +86,41 @@ These fixes were validated in the `GameXpert_Godot` Jenkins scripts:
 
 ## Known Non-Blocking Follow-Ups
 
-- `extensions-custom/**` is still outside the repo Vitest include list.
-- Local integration config remains machine-specific and should stay out of version control.
+- Local integration config remains machine-specific and should keep real secrets in `.env`.
 - Jenkins agent availability is still operationally important:
   - `local-macos` must stay online for this pipeline.
 - Release flow is validated for Android APK + patch.
   - Android AAB and macOS app paths are designed, but not yet validated end to end in this live flow.
+- Notification delivery is now validated through a real `pm` Feishu session.
+  - `release_notifications_drain -> pm -> release_notifications_ack` completed successfully against a live outbox record.
+  - `session_bound` delivery currently works by having the bound notifier session emit the final reply on its own delivery surface.
+  - The notifier prompt has been tightened so `explicit_target` prefers the rendered `message` plan, while `session_bound` prefers bound-session replies and must not ack before actual send.
+
+## Recommended Notifier Responsibilities
+
+- `main`
+  - owns operator-facing release actions and manual notifier recovery
+  - may call `release_notifications_drain` and can keep `pull/render/ack/fail` for debugging and backfill
+- `pm`
+  - is the dedicated notifier worker
+  - should have `message`, `release_notifications_pull`, `release_notifications_render`, `release_notifications_ack`, and `release_notifications_fail`
+  - should be the only normal runtime agent that consumes notification outbox work
+- `client`
+  - should not act as the notifier worker
+  - may keep normal messaging capability, but should not own lobster notification queue consumption
+- other agents
+  - should not carry notifier-specific tools unless they are intentionally acting as a backup notifier
+- config rule
+  - keep plugin exposure available through global `tools.alsoAllow`
+  - keep per-agent `tools.allow` scoped to each role, so notifier worker tools do not drift into unrelated agents
 
 ## Recommended Next Steps
 
 - Push both repositories so the current live-working state is preserved remotely.
-- Add `extensions-custom/**` to the test include list or add a dedicated test command for `lobster-release`.
 - Decide whether `GameXpert_Godot` should keep using `local-macos` or move to a more stable dedicated agent.
 - If needed, run one more regression for:
   - Android AAB
   - rollback execution
   - failed build callback path
+- Build the dedicated notifier agent workflow and validate a real Feishu notification round trip.
+- Decide whether notifier delivery should stay reply-driven for `session_bound` mode or move to an explicit message-tool path later.

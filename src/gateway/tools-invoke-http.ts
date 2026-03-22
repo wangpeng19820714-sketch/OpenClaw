@@ -10,7 +10,7 @@ import {
   buildDefaultToolPolicyPipelineSteps,
 } from "../agents/tool-policy-pipeline.js";
 import {
-  collectExplicitAllowlist,
+  collectExplicitToolExposure,
   mergeAlsoAllowPolicy,
   resolveToolProfilePolicy,
 } from "../agents/tool-policy.js";
@@ -255,16 +255,19 @@ export async function handleToolsInvokeHttpRequest(
     // HTTP callers consume tool output directly; preserve raw media invoke payloads.
     allowMediaInvokeCommands: true,
     config: cfg,
-    pluginToolAllowlist: collectExplicitAllowlist([
-      profilePolicy,
-      providerProfilePolicy,
-      globalPolicy,
-      globalProviderPolicy,
-      agentPolicy,
-      agentProviderPolicy,
-      groupPolicy,
-      subagentPolicy,
-    ]),
+    pluginToolAllowlist: collectExplicitToolExposure({
+      policies: [
+        profilePolicy,
+        providerProfilePolicy,
+        globalPolicy,
+        globalProviderPolicy,
+        agentPolicy,
+        agentProviderPolicy,
+        groupPolicy,
+        subagentPolicy,
+      ],
+      additiveAllowlists: [profileAlsoAllow, providerProfileAlsoAllow],
+    }),
   });
 
   const subagentFiltered = applyToolPolicyPipeline({

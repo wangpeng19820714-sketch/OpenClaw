@@ -236,6 +236,16 @@ Action: choose a newer stable release or rebuild with compatible manifest.
 3. `resourceProtocolVersion` 校验
 4. 高风险 patch 阻断
 
+当前实现状态：
+
+- 已支持 `pointer_switch`
+- rollback 时会重写目标 release 的 `release_manifest.json`
+- source release 会标记为 `rolled_back`
+- `freezeCurrentRelease=true` 时会冻结事故版本
+- 当前兼容性阻断规则：
+  - `target.minClientVersion < current.minClientVersion` 时阻断
+  - `target.resourceProtocolVersion != current.resourceProtocolVersion` 时阻断
+
 第二版再补：
 
 1. `manifest_republish`

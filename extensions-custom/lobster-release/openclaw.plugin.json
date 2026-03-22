@@ -28,6 +28,24 @@
       "help": "HTTP prefix compatible with existing Jenkins lobster scripts.",
       "placeholder": "/api/ci/v1"
     },
+    "notifierSessionKey": {
+      "label": "Notifier Session Key",
+      "help": "Optional fixed notifier agent session key. Can be used as a bound delivery surface without configuring notifierChannel/notifierTarget.",
+      "placeholder": "agent:lobster-release:notifier"
+    },
+    "notifierChannel": {
+      "label": "Notifier Channel",
+      "help": "Optional explicit outbound channel used by the notifier agent when you want lobster-release to provide a direct target.",
+      "placeholder": "feishu"
+    },
+    "notifierTarget": {
+      "label": "Notifier Target",
+      "help": "Optional explicit outbound target used by the notifier agent. Leave empty when notifierSessionKey already points at a bound agent session."
+    },
+    "notifierAccountId": {
+      "label": "Notifier Account ID",
+      "help": "Optional channel account id used for notifier deliveries."
+    },
     "publicBaseUrl": {
       "label": "Public Base URL",
       "help": "Optional public base URL used to derive manifest and artifact URLs.",
@@ -110,6 +128,10 @@
       "defaultChannel": { "type": "string" },
       "routePrefix": { "type": "string" },
       "ciRoutePrefix": { "type": "string" },
+      "notifierSessionKey": { "type": "string" },
+      "notifierChannel": { "type": "string" },
+      "notifierTarget": { "type": "string" },
+      "notifierAccountId": { "type": "string" },
       "publicBaseUrl": { "type": "string" },
       "callbackToken": { "type": "string" },
       "ciApiKey": { "type": "string" },

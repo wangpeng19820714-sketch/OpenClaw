@@ -17,6 +17,7 @@ import type {
   ChannelStateRecord,
   CreateReleaseInput,
   EventLogRecord,
+  NotificationOutboxRecord,
   ProjectRecord,
   ReleaseChannel,
   ReleaseEnvironment,
@@ -116,12 +117,46 @@ export class LobsterReleaseRuntime {
     this.store.releaseLock(this.channelLockKey(projectKey, environment, channel));
   }
 
-  private recordEvent(params: Omit<EventLogRecord, "eventId" | "createdAt">): void {
-    this.store.insertEvent({
+  private recordEvent(params: Omit<EventLogRecord, "eventId" | "createdAt">): EventLogRecord {
+    const event = {
       ...params,
       eventId: createId("evt"),
       createdAt: nowIso(),
-    });
+    };
+    this.store.insertEvent(event);
+    return event;
+  }
+
+  private queueNotification(params: {
+    event: EventLogRecord;
+    dedupeKey: string;
+    payload: Record<string, unknown>;
+    deliveryChannel?: NotificationOutboxRecord["deliveryChannel"];
+  }): NotificationOutboxRecord {
+    const deliveryChannel = params.deliveryChannel ?? "feishu";
+    const existing = this.store.getNotificationByDedupeKey(deliveryChannel, params.dedupeKey);
+    if (existing) {
+      return existing;
+    }
+    const now = nowIso();
+    const record: NotificationOutboxRecord = {
+      notificationId: createId("ntf"),
+      eventId: params.event.eventId,
+      projectId: params.event.projectId,
+      projectKey: params.event.projectKey,
+      environment: params.event.environment,
+      channel: (params.payload.channel as ReleaseChannel | undefined) ?? undefined,
+      eventType: params.event.eventType,
+      deliveryChannel,
+      status: "pending",
+      dedupeKey: params.dedupeKey,
+      payload: params.payload,
+      attemptCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.store.insertNotification(record);
+    return this.store.getNotificationByDedupeKey(deliveryChannel, params.dedupeKey) ?? record;
   }
 
   private normalizeCiChannel(raw?: string): ReleaseChannel {
@@ -487,6 +522,141 @@ export class LobsterReleaseRuntime {
     return this.store.getRollback(rollbackId);
   }
 
+  getNotification(notificationId: string): NotificationOutboxRecord | null {
+    return this.store.getNotification(notificationId);
+  }
+
+  renderNotification(notificationId: string): {
+    notification: NotificationOutboxRecord;
+    messageText: string;
+    deliveryPlan: {
+      tool: "message";
+      args: Record<string, unknown>;
+      configured: boolean;
+      mode: "explicit_target" | "session_bound" | "unconfigured";
+    };
+  } {
+    const notification = this.store.getNotification(notificationId);
+    if (!notification) {
+      throw new Error(`notification not found: ${notificationId}`);
+    }
+    const payload = notification.payload;
+    const release = (payload.release as Record<string, unknown> | undefined) ?? {};
+    const build = (payload.build as Record<string, unknown> | undefined) ?? {};
+    const rollback = (payload.rollback as Record<string, unknown> | undefined) ?? {};
+    const summary = typeof payload.summary === "string" ? payload.summary : undefined;
+    const lines = [
+      `[Lobster Release] ${notification.eventType}`,
+      `Project: ${notification.projectKey}`,
+      notification.environment ? `Environment: ${notification.environment}` : null,
+      notification.channel ? `Channel: ${notification.channel}` : null,
+      typeof release.version === "string" ? `Version: ${release.version}` : null,
+      typeof release.releaseId === "string" ? `Release: ${release.releaseId}` : null,
+      typeof build.buildId === "string" ? `Build: ${build.buildId}` : null,
+      typeof build.jenkinsBuildNumber === "number"
+        ? `Jenkins Build: #${build.jenkinsBuildNumber}`
+        : null,
+      typeof rollback.rollbackId === "string" ? `Rollback: ${rollback.rollbackId}` : null,
+      summary ? `Summary: ${summary}` : null,
+      typeof rollback.reason === "string" ? `Reason: ${rollback.reason}` : null,
+      typeof notification.lastError === "string" ? `Last Error: ${notification.lastError}` : null,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n");
+    const mode =
+      this.config.notifierChannel && this.config.notifierTarget
+        ? ("explicit_target" as const)
+        : this.config.notifierSessionKey
+          ? ("session_bound" as const)
+          : ("unconfigured" as const);
+    return {
+      notification,
+      messageText: lines,
+      deliveryPlan: {
+        tool: "message",
+        configured: mode !== "unconfigured",
+        mode,
+        args: {
+          action: "send",
+          ...(mode === "explicit_target" && this.config.notifierChannel
+            ? { channel: this.config.notifierChannel }
+            : {}),
+          ...(mode === "explicit_target" && this.config.notifierTarget
+            ? { target: this.config.notifierTarget }
+            : {}),
+          ...(this.config.notifierAccountId ? { accountId: this.config.notifierAccountId } : {}),
+          message: lines,
+        },
+      },
+    };
+  }
+
+  pullNotifications(params?: {
+    limit?: number;
+    includeFailed?: boolean;
+    deliveryChannel?: NotificationOutboxRecord["deliveryChannel"];
+  }): NotificationOutboxRecord[] {
+    const candidates = this.store.listNotifications({
+      statuses: params?.includeFailed ? ["pending", "failed"] : ["pending"],
+      deliveryChannel: params?.deliveryChannel ?? "feishu",
+      limit: params?.limit ?? 10,
+    });
+    const claimedAt = nowIso();
+    return candidates.map((record) => {
+      const next: NotificationOutboxRecord = {
+        ...record,
+        status: "sending",
+        attemptCount: record.attemptCount + 1,
+        claimedAt,
+        updatedAt: claimedAt,
+      };
+      this.store.upsertNotification(next);
+      return next;
+    });
+  }
+
+  markNotificationSent(
+    notificationId: string,
+    params?: { deliveryNote?: string },
+  ): NotificationOutboxRecord {
+    const record = this.store.getNotification(notificationId);
+    if (!record) {
+      throw new Error(`notification not found: ${notificationId}`);
+    }
+    const nextPayload =
+      params?.deliveryNote && params.deliveryNote.trim()
+        ? {
+            ...record.payload,
+            deliveryNote: params.deliveryNote.trim(),
+          }
+        : record.payload;
+    const next: NotificationOutboxRecord = {
+      ...record,
+      status: "sent",
+      payload: nextPayload,
+      lastError: undefined,
+      sentAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    this.store.upsertNotification(next);
+    return next;
+  }
+
+  markNotificationFailed(notificationId: string, error: string): NotificationOutboxRecord {
+    const record = this.store.getNotification(notificationId);
+    if (!record) {
+      throw new Error(`notification not found: ${notificationId}`);
+    }
+    const next: NotificationOutboxRecord = {
+      ...record,
+      status: "failed",
+      lastError: error,
+      updatedAt: nowIso(),
+    };
+    this.store.upsertNotification(next);
+    return next;
+  }
+
   async createRelease(input: CreateReleaseInput): Promise<{
     release: ReleaseRecord;
     currentChannelReleaseId?: string;
@@ -671,6 +841,34 @@ export class LobsterReleaseRuntime {
       artifacts.find((item) => item.artifactType === "patch_bundle") ??
       null
     );
+  }
+
+  private compatibilityForRelease(release: ReleaseRecord): ReleaseManifest["compatibility"] {
+    return {
+      minClientVersion: `${release.versionMajor}.${release.versionMinor}.0`,
+      resourceProtocolVersion: release.versionBumpType === "major" ? 2 : 1,
+      minManifestVersion: 1,
+    };
+  }
+
+  private assertRollbackCompatibility(current: ReleaseRecord, target: ReleaseRecord): void {
+    const currentCompatibility = this.compatibilityForRelease(current);
+    const targetCompatibility = this.compatibilityForRelease(target);
+    if (
+      compareVersions(targetCompatibility.minClientVersion, currentCompatibility.minClientVersion) <
+      0
+    ) {
+      throw new Error(
+        `rollback.compatibility_conflict: target minClientVersion ${targetCompatibility.minClientVersion} is older than current ${currentCompatibility.minClientVersion}`,
+      );
+    }
+    if (
+      targetCompatibility.resourceProtocolVersion !== currentCompatibility.resourceProtocolVersion
+    ) {
+      throw new Error(
+        `rollback.compatibility_conflict: target resourceProtocolVersion ${targetCompatibility.resourceProtocolVersion} does not match current ${currentCompatibility.resourceProtocolVersion}`,
+      );
+    }
   }
 
   async triggerRelease(input: TriggerReleaseInput): Promise<{
@@ -1097,6 +1295,7 @@ export class LobsterReleaseRuntime {
             : "awaiting_approval"
           : "failed",
       stable: payload.status === "success" && release.channel === "dev",
+      frozen: payload.status === "success" ? release.frozen : false,
       updatedAt: nowIso(),
       publishedAt:
         payload.status === "success" && release.channel === "dev" && this.config.autoPublishDev
@@ -1107,7 +1306,7 @@ export class LobsterReleaseRuntime {
     if (nextRelease.status === "published") {
       this.publishChannelPointer(nextRelease, "auto-dev");
     }
-    this.recordEvent({
+    const event = this.recordEvent({
       projectId: release.projectId,
       projectKey: release.projectKey,
       environment: release.environment,
@@ -1116,6 +1315,104 @@ export class LobsterReleaseRuntime {
       eventType: `build.${payload.status}`,
       payload: { summary: payload.summary ?? null, reports: payload.reports ?? null },
     });
+    if (payload.status === "success" && nextRelease.status === "awaiting_approval") {
+      const approvalEvent = this.recordEvent({
+        projectId: release.projectId,
+        projectKey: release.projectKey,
+        environment: release.environment,
+        objectType: "release",
+        objectId: release.releaseId,
+        eventType: "release.awaiting_approval",
+        payload: {
+          buildId: build.buildId,
+          version: release.version,
+          channel: release.channel,
+          environment: release.environment,
+        },
+      });
+      this.queueNotification({
+        event: approvalEvent,
+        dedupeKey: `release.awaiting_approval:${release.releaseId}`,
+        payload: {
+          projectKey: release.projectKey,
+          environment: release.environment,
+          channel: release.channel,
+          release: {
+            releaseId: release.releaseId,
+            version: release.version,
+            status: nextRelease.status,
+          },
+          build: {
+            buildId: build.buildId,
+            status: nextBuild.status,
+            result: nextBuild.result,
+            jenkinsJob: nextBuild.jenkinsJob,
+            jenkinsBuildNumber: nextBuild.jenkinsBuildNumber,
+          },
+        },
+      });
+    }
+    if (payload.status !== "success") {
+      this.queueNotification({
+        event,
+        dedupeKey: `${event.eventType}:${build.buildId}`,
+        payload: {
+          projectKey: release.projectKey,
+          environment: release.environment,
+          channel: release.channel,
+          release: {
+            releaseId: release.releaseId,
+            version: release.version,
+            status: nextRelease.status,
+          },
+          build: {
+            buildId: build.buildId,
+            status: nextBuild.status,
+            result: nextBuild.result,
+            jenkinsJob: nextBuild.jenkinsJob,
+            jenkinsBuildNumber: nextBuild.jenkinsBuildNumber,
+          },
+          summary: payload.summary,
+          reports: payload.reports,
+        },
+      });
+    }
+    if (nextRelease.status === "published") {
+      const publishedEvent = this.recordEvent({
+        projectId: release.projectId,
+        projectKey: release.projectKey,
+        environment: release.environment,
+        objectType: "release",
+        objectId: release.releaseId,
+        eventType: "release.published",
+        payload: {
+          buildId: build.buildId,
+          version: release.version,
+          channel: release.channel,
+          environment: release.environment,
+        },
+      });
+      this.queueNotification({
+        event: publishedEvent,
+        dedupeKey: `release.published:${release.releaseId}`,
+        payload: {
+          projectKey: release.projectKey,
+          environment: release.environment,
+          channel: release.channel,
+          release: {
+            releaseId: release.releaseId,
+            version: release.version,
+            status: nextRelease.status,
+            manifestUrl: release.manifestUrl,
+          },
+          build: {
+            buildId: build.buildId,
+            status: nextBuild.status,
+            result: nextBuild.result,
+          },
+        },
+      });
+    }
     return { build: nextBuild, release: nextRelease };
   }
 
@@ -1156,6 +1453,32 @@ export class LobsterReleaseRuntime {
         eventType: "release.approved",
         payload: { channel: release.channel },
         createdBy: operator,
+      });
+      const publishedEvent = this.recordEvent({
+        projectId: release.projectId,
+        projectKey: release.projectKey,
+        environment: release.environment,
+        objectType: "release",
+        objectId: releaseId,
+        eventType: "release.published",
+        payload: { channel: release.channel, version: release.version },
+        createdBy: operator,
+      });
+      this.queueNotification({
+        event: publishedEvent,
+        dedupeKey: `release.published:${release.releaseId}`,
+        payload: {
+          projectKey: release.projectKey,
+          environment: release.environment,
+          channel: release.channel,
+          release: {
+            releaseId: release.releaseId,
+            version: release.version,
+            status: next.status,
+            manifestUrl: next.manifestUrl,
+            publishedAt: next.publishedAt,
+          },
+        },
       });
       return next;
     } finally {
@@ -1223,6 +1546,7 @@ export class LobsterReleaseRuntime {
     if (!toRelease.stable) {
       throw new Error("rollback target must be stable");
     }
+    this.assertRollbackCompatibility(fromRelease, toRelease);
     const rollback: RollbackOperationRecord = {
       rollbackId: createId("rbk"),
       projectId: fromRelease.projectId,
@@ -1245,7 +1569,7 @@ export class LobsterReleaseRuntime {
     return rollback;
   }
 
-  approveRollback(rollbackId: string, approver: string): RollbackOperationRecord {
+  async approveRollback(rollbackId: string, approver: string): Promise<RollbackOperationRecord> {
     const rollback = this.store.getRollback(rollbackId);
     if (!rollback) {
       throw new Error(`rollback not found: ${rollbackId}`);
@@ -1284,18 +1608,21 @@ export class LobsterReleaseRuntime {
         updatedAt: nowIso(),
         updatedBy: approver,
       });
-      if (rollback.freezeCurrentRelease) {
-        this.store.upsertRelease({
-          ...current,
-          frozen: true,
-          updatedAt: nowIso(),
-        });
-      }
+      this.store.upsertRelease({
+        ...current,
+        status: "rolled_back",
+        frozen: rollback.freezeCurrentRelease ? true : current.frozen,
+        updatedAt: nowIso(),
+      });
       this.store.upsertRelease({
         ...target,
+        status: "published",
         stable: true,
         updatedAt: nowIso(),
       });
+      if (target.currentBuildId) {
+        await this.generateManifest(target.releaseId, target.currentBuildId);
+      }
       this.store.insertReleaseRelation({
         relationId: createId("reln"),
         projectId: current.projectId,
@@ -1317,11 +1644,42 @@ export class LobsterReleaseRuntime {
         projectId: current.projectId,
         projectKey: rollback.projectKey,
         environment: rollback.environment,
+        objectType: "release",
+        objectId: current.releaseId,
+        eventType: "release.rolled_back",
+        payload: { rollbackId, targetReleaseId: target.releaseId },
+        createdBy: approver,
+      });
+      const rollbackEvent = this.recordEvent({
+        projectId: current.projectId,
+        projectKey: rollback.projectKey,
+        environment: rollback.environment,
         objectType: "rollback",
         objectId: rollbackId,
         eventType: "rollback.completed",
         payload: { fromReleaseId: current.releaseId, toReleaseId: target.releaseId },
         createdBy: approver,
+      });
+      this.queueNotification({
+        event: rollbackEvent,
+        dedupeKey: `rollback.completed:${rollbackId}`,
+        payload: {
+          projectKey: rollback.projectKey,
+          environment: rollback.environment,
+          channel: rollback.channel,
+          rollback: {
+            rollbackId,
+            status: completed.status,
+            fromReleaseId: current.releaseId,
+            toReleaseId: target.releaseId,
+            reason: rollback.reason,
+            strategy: rollback.strategy,
+          },
+          release: {
+            currentReleaseId: target.releaseId,
+            previousReleaseId: current.releaseId,
+          },
+        },
       });
       return completed;
     } finally {
@@ -1734,11 +2092,7 @@ export class LobsterReleaseRuntime {
         jenkinsJob: build.jenkinsJob,
         jenkinsBuildNumber: build.jenkinsBuildNumber,
       },
-      compatibility: {
-        minClientVersion: `${release.versionMajor}.${release.versionMinor}.0`,
-        resourceProtocolVersion: release.versionBumpType === "major" ? 2 : 1,
-        minManifestVersion: 1,
-      },
+      compatibility: this.compatibilityForRelease(release),
       baseline,
       artifacts: artifacts.map((artifact) => ({
         type: artifact.artifactType,

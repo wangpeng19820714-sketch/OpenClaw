@@ -86,6 +86,28 @@ export function collectExplicitAllowlist(policies: Array<ToolPolicyLike | undefi
   return entries;
 }
 
+export function collectExplicitToolExposure(params: {
+  policies?: Array<ToolPolicyLike | undefined>;
+  additiveAllowlists?: Array<string[] | undefined>;
+}): string[] {
+  const entries = collectExplicitAllowlist(params.policies ?? []);
+  for (const allowlist of params.additiveAllowlists ?? []) {
+    if (!Array.isArray(allowlist)) {
+      continue;
+    }
+    for (const value of allowlist) {
+      if (typeof value !== "string") {
+        continue;
+      }
+      const trimmed = value.trim();
+      if (trimmed) {
+        entries.push(trimmed);
+      }
+    }
+  }
+  return Array.from(new Set(entries));
+}
+
 export function buildPluginToolGroups<T extends { name: string }>(params: {
   tools: T[];
   toolMeta: (tool: T) => { pluginId: string } | undefined;

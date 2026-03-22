@@ -70,7 +70,12 @@
             "session_status",
             "subagents",
             "feishu_app_scopes",
-            "feishu_chat"
+            "feishu_chat",
+            "release_notifications_drain",
+            "release_notifications_pull",
+            "release_notifications_render",
+            "release_notifications_ack",
+            "release_notifications_fail"
           ],
           "deny": []
         }
@@ -103,6 +108,7 @@
             "sessions_spawn",
             "session_status",
             "subagents",
+            "message",
             "feishu_app_scopes",
             "feishu_chat"
           ],
@@ -152,8 +158,13 @@
             "sessions_spawn",
             "session_status",
             "subagents",
+            "message",
             "feishu_app_scopes",
-            "feishu_chat"
+            "feishu_chat",
+            "release_notifications_pull",
+            "release_notifications_render",
+            "release_notifications_ack",
+            "release_notifications_fail"
           ],
           "deny": []
         }
@@ -198,6 +209,13 @@
     ]
   },
   "tools": {
+    "alsoAllow": [
+      "release_notifications_drain",
+      "release_notifications_pull",
+      "release_notifications_render",
+      "release_notifications_ack",
+      "release_notifications_fail"
+    ],
     "sessions": {
       "visibility": "all"
     },
@@ -396,6 +414,7 @@
           "defaultChannel": "beta",
           "routePrefix": "/plugins/lobster-release/api",
           "ciRoutePrefix": "/api/ci/v1",
+          "notifierSessionKey": "${LOBSTER_NOTIFIER_SESSION_KEY}",
           "publicBaseUrl": "${LOBSTER_PUBLIC_BASE_URL}",
           "ciApiKey": "${LOBSTER_CI_API_KEY}",
           "ciApiSecret": "${LOBSTER_CI_API_SECRET}",

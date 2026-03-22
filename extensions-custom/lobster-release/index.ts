@@ -1,6 +1,7 @@
 import path from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { AnyAgentTool, OpenClawPluginApi } from "openclaw/plugin-sdk/lobster";
+import { createGatewaySubagentRuntime } from "../../src/plugins/runtime/gateway-subagent-runtime.js";
 import { resolveLobsterReleaseConfig } from "./config.js";
 import { createLobsterReleaseHttpHandler } from "./http.js";
 import { LobsterReleaseRuntime } from "./runtime.js";
@@ -34,9 +35,217 @@ function normalizeTargets(raw: unknown): BuildTargets {
   };
 }
 
-function createTools(runtime: LobsterReleaseRuntime, defaultProjectKey: string): AnyAgentTool[] {
+const DEFAULT_NOTIFIER_SESSION_KEY = "agent:lobster-release:notifier";
+const DEFAULT_NOTIFIER_MESSAGE =
+  "Process pending lobster release notifications. Pull pending items from lobster-release, send the needed Feishu notifications, and acknowledge or fail each item.";
+const SUBAGENT_GATEWAY_REQUEST_ERROR =
+  "Plugin runtime subagent methods are only available during a gateway request.";
+function buildNotifierSystemPrompt(config: ReturnType<typeof resolveLobsterReleaseConfig>) {
+  const lines = [
+    "You are the Lobster Release Notifier.",
+    "Only handle notifications that come from lobster-release notification tools.",
+    "Use release_notifications_pull first, then use release_notifications_render for each notification before sending.",
+    "If release_notifications_render returns mode=explicit_target, prefer the rendered deliveryPlan and use the message tool with those rendered args.",
+    "If release_notifications_render returns mode=session_bound, prefer sending by replying from the bound notifier session unless the rendered plan includes an explicit target.",
+    "Do not invent targets, rewrite the message body, or switch delivery channels unless the rendered plan explicitly tells you to.",
+    "Only call release_notifications_ack after the notification message is actually sent on the delivery surface.",
+    "If the required delivery primitive is unavailable or send confirmation is ambiguous, call release_notifications_fail with the concrete reason instead of acknowledging.",
+    "You may inspect release_status or release_provenance for context, but never create, approve, publish, or rollback a release.",
+    "Avoid duplicate sends and keep messages concise and operational.",
+  ];
+  if (config.notifierChannel && config.notifierTarget) {
+    lines.push(
+      `Default delivery target: channel=${config.notifierChannel}, target=${config.notifierTarget}${config.notifierAccountId ? `, accountId=${config.notifierAccountId}` : ""}.`,
+    );
+    lines.push("Prefer the deliveryPlan returned by release_notifications_render.");
+  } else if (config.notifierSessionKey) {
+    lines.push(
+      `Use the notifier session ${config.notifierSessionKey} as the bound delivery surface. When release_notifications_render returns mode=session_bound, do not add an explicit target unless the rendered plan includes one.`,
+    );
+  } else {
+    lines.push(
+      "No notifier delivery route is configured. If release_notifications_render says deliveryPlan.configured=false, do not guess a target.",
+    );
+  }
+  return lines.join("\n");
+}
+
+export const __testing = {
+  buildNotifierSystemPrompt,
+} as const;
+
+function createTools(
+  runtime: LobsterReleaseRuntime,
+  defaultProjectKey: string,
+  pluginRuntime: OpenClawPluginApi["runtime"],
+  config: ReturnType<typeof resolveLobsterReleaseConfig>,
+): AnyAgentTool[] {
+  let readyPromise: Promise<void> | null = null;
+  const ensureReady = async () => {
+    if (!readyPromise) {
+      readyPromise = runtime.start().catch((error) => {
+        readyPromise = null;
+        throw error;
+      });
+    }
+    await readyPromise;
+  };
+  const withRuntimeReady = (tool: AnyAgentTool): AnyAgentTool => {
+    if (!tool.execute) {
+      return tool;
+    }
+    return {
+      ...tool,
+      execute: async (toolCallId, rawParams) => {
+        await ensureReady();
+        return tool.execute!(toolCallId, rawParams);
+      },
+    };
+  };
+  const runNotifierSubagent = async (params: Parameters<typeof pluginRuntime.subagent.run>[0]) => {
+    try {
+      return await pluginRuntime.subagent.run(params);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes(SUBAGENT_GATEWAY_REQUEST_ERROR)) {
+        throw error;
+      }
+      return createGatewaySubagentRuntime().run(params);
+    }
+  };
+  const waitForNotifierRun = async (
+    params: Parameters<typeof pluginRuntime.subagent.waitForRun>[0],
+  ) => {
+    try {
+      return await pluginRuntime.subagent.waitForRun(params);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes(SUBAGENT_GATEWAY_REQUEST_ERROR)) {
+        throw error;
+      }
+      return createGatewaySubagentRuntime().waitForRun(params);
+    }
+  };
   return [
-    {
+    withRuntimeReady({
+      name: "release_notifications_drain",
+      label: "Release Notifications Drain",
+      description: "Start the dedicated lobster notifier agent to process queued notifications.",
+      parameters: Type.Object(
+        {
+          sessionKey: Type.Optional(Type.String({ minLength: 1 })),
+          message: Type.Optional(Type.String({ minLength: 1 })),
+          waitForCompletion: Type.Optional(Type.Boolean()),
+          timeoutMs: Type.Optional(Type.Number({ minimum: 1000, maximum: 300000 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        const sessionKey =
+          (typeof params.sessionKey === "string" && params.sessionKey.trim()) ||
+          config.notifierSessionKey ||
+          DEFAULT_NOTIFIER_SESSION_KEY;
+        const message =
+          (typeof params.message === "string" && params.message.trim()) || DEFAULT_NOTIFIER_MESSAGE;
+        const run = await runNotifierSubagent({
+          sessionKey,
+          message,
+          extraSystemPrompt: buildNotifierSystemPrompt(config),
+          lane: "subagent",
+          deliver: false,
+          idempotencyKey: `lobster-notifier:${sessionKey}:${Date.now()}`,
+        });
+        if (params.waitForCompletion === true) {
+          const wait = await waitForNotifierRun({
+            runId: run.runId,
+            timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 60_000,
+          });
+          return jsonToolResult({
+            sessionKey,
+            runId: run.runId,
+            wait,
+          });
+        }
+        return jsonToolResult({
+          sessionKey,
+          runId: run.runId,
+        });
+      },
+    }),
+    withRuntimeReady({
+      name: "release_notifications_render",
+      label: "Release Notifications Render",
+      description: "Render a queued lobster release notification into a delivery plan.",
+      parameters: Type.Object(
+        {
+          notificationId: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(runtime.renderNotification(String(params.notificationId)));
+      },
+    }),
+    withRuntimeReady({
+      name: "release_notifications_pull",
+      label: "Release Notifications Pull",
+      description: "Claim pending lobster release notifications for delivery.",
+      parameters: Type.Object(
+        {
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 50 })),
+          includeFailed: Type.Optional(Type.Boolean()),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.pullNotifications({
+            limit: typeof params.limit === "number" ? params.limit : 10,
+            includeFailed: params.includeFailed === true,
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_notifications_ack",
+      label: "Release Notifications Ack",
+      description: "Mark a lobster release notification as delivered.",
+      parameters: Type.Object(
+        {
+          notificationId: Type.String({ minLength: 1 }),
+          deliveryNote: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.markNotificationSent(String(params.notificationId), {
+            deliveryNote: typeof params.deliveryNote === "string" ? params.deliveryNote : undefined,
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_notifications_fail",
+      label: "Release Notifications Fail",
+      description: "Mark a lobster release notification as failed with an error.",
+      parameters: Type.Object(
+        {
+          notificationId: Type.String({ minLength: 1 }),
+          error: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.markNotificationFailed(String(params.notificationId), String(params.error)),
+        );
+      },
+    }),
+    withRuntimeReady({
       name: "release_create",
       label: "Release Create",
       description: "Create a release and optionally trigger Jenkins build.",
@@ -91,8 +300,8 @@ function createTools(runtime: LobsterReleaseRuntime, defaultProjectKey: string):
         });
         return jsonToolResult(result);
       },
-    },
-    {
+    }),
+    withRuntimeReady({
       name: "release_status",
       label: "Release Status",
       description: "Get release details or current channel state.",
@@ -126,8 +335,8 @@ function createTools(runtime: LobsterReleaseRuntime, defaultProjectKey: string):
         );
         return jsonToolResult(state);
       },
-    },
-    {
+    }),
+    withRuntimeReady({
       name: "release_graph",
       label: "Release Graph",
       description: "Inspect release graph relations for a release or channel.",
@@ -167,8 +376,8 @@ function createTools(runtime: LobsterReleaseRuntime, defaultProjectKey: string):
           ),
         );
       },
-    },
-    {
+    }),
+    withRuntimeReady({
       name: "release_provenance",
       label: "Release Provenance",
       description: "Inspect build provenance by build or release.",
@@ -197,8 +406,8 @@ function createTools(runtime: LobsterReleaseRuntime, defaultProjectKey: string):
         }
         throw new Error("buildId or releaseId is required");
       },
-    },
-    {
+    }),
+    withRuntimeReady({
       name: "release_approve",
       label: "Release Approve",
       description: "Approve a built release for publish.",
@@ -218,8 +427,8 @@ function createTools(runtime: LobsterReleaseRuntime, defaultProjectKey: string):
           ),
         );
       },
-    },
-    {
+    }),
+    withRuntimeReady({
       name: "release_rollback",
       label: "Release Rollback",
       description: "Create and approve a rollback request for a channel.",
@@ -267,7 +476,7 @@ function createTools(runtime: LobsterReleaseRuntime, defaultProjectKey: string):
         });
         return jsonToolResult(rollback);
       },
-    },
+    }),
   ];
 }
 
@@ -283,8 +492,13 @@ const plugin = {
     );
     const runtime = new LobsterReleaseRuntime(store, config, api.logger, stateDir);
 
-    api.registerTool(() => createTools(runtime, config.defaultProjectKey), {
+    api.registerTool(() => createTools(runtime, config.defaultProjectKey, api.runtime, config), {
       names: [
+        "release_notifications_drain",
+        "release_notifications_render",
+        "release_notifications_pull",
+        "release_notifications_ack",
+        "release_notifications_fail",
         "release_create",
         "release_status",
         "release_graph",

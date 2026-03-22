@@ -8,6 +8,7 @@ import type {
   BuildRecord,
   ChannelStateRecord,
   EventLogRecord,
+  NotificationOutboxRecord,
   OperationLockRecord,
   ProjectRecord,
   ReleaseRecord,
@@ -156,6 +157,23 @@ export class LobsterReleaseStore {
         created_at TEXT NOT NULL,
         record_json TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS notification_outbox (
+        notification_id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL,
+        project_key TEXT NOT NULL,
+        delivery_channel TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        dedupe_key TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS notification_outbox_dedupe_uq
+        ON notification_outbox(delivery_channel, dedupe_key);
+      CREATE INDEX IF NOT EXISTS notification_outbox_status_idx
+        ON notification_outbox(status, updated_at ASC);
 
       CREATE TABLE IF NOT EXISTS patch_baselines (
         baseline_id TEXT PRIMARY KEY,
@@ -495,6 +513,104 @@ export class LobsterReleaseStore {
         record.createdAt,
         JSON.stringify(record),
       );
+  }
+
+  insertNotification(record: NotificationOutboxRecord): void {
+    this.getDb()
+      .prepare(
+        `INSERT INTO notification_outbox (
+            notification_id, event_id, project_key, delivery_channel, event_type, status, dedupe_key, created_at, updated_at, record_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(delivery_channel, dedupe_key) DO NOTHING`,
+      )
+      .run(
+        record.notificationId,
+        record.eventId,
+        record.projectKey,
+        record.deliveryChannel,
+        record.eventType,
+        record.status,
+        record.dedupeKey,
+        record.createdAt,
+        record.updatedAt,
+        JSON.stringify(record),
+      );
+  }
+
+  upsertNotification(record: NotificationOutboxRecord): void {
+    this.getDb()
+      .prepare(
+        `INSERT INTO notification_outbox (
+            notification_id, event_id, project_key, delivery_channel, event_type, status, dedupe_key, created_at, updated_at, record_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(notification_id) DO UPDATE SET
+            status = excluded.status,
+            updated_at = excluded.updated_at,
+            record_json = excluded.record_json`,
+      )
+      .run(
+        record.notificationId,
+        record.eventId,
+        record.projectKey,
+        record.deliveryChannel,
+        record.eventType,
+        record.status,
+        record.dedupeKey,
+        record.createdAt,
+        record.updatedAt,
+        JSON.stringify(record),
+      );
+  }
+
+  getNotification(notificationId: string): NotificationOutboxRecord | null {
+    const row = this.getDb()
+      .prepare("SELECT record_json FROM notification_outbox WHERE notification_id = ?")
+      .get(notificationId) as JsonRow | undefined;
+    return parseJson<NotificationOutboxRecord>(row?.record_json);
+  }
+
+  getNotificationByDedupeKey(
+    deliveryChannel: NotificationOutboxRecord["deliveryChannel"],
+    dedupeKey: string,
+  ): NotificationOutboxRecord | null {
+    const row = this.getDb()
+      .prepare(
+        "SELECT record_json FROM notification_outbox WHERE delivery_channel = ? AND dedupe_key = ?",
+      )
+      .get(deliveryChannel, dedupeKey) as JsonRow | undefined;
+    return parseJson<NotificationOutboxRecord>(row?.record_json);
+  }
+
+  listNotifications(params?: {
+    statuses?: NotificationOutboxRecord["status"][];
+    deliveryChannel?: NotificationOutboxRecord["deliveryChannel"];
+    limit?: number;
+  }): NotificationOutboxRecord[] {
+    const clauses: string[] = [];
+    const values: Array<number | string> = [];
+    if (params?.deliveryChannel) {
+      clauses.push("delivery_channel = ?");
+      values.push(params.deliveryChannel);
+    }
+    if (params?.statuses?.length) {
+      clauses.push(`status IN (${params.statuses.map(() => "?").join(", ")})`);
+      values.push(...params.statuses);
+    }
+    let query = "SELECT record_json FROM notification_outbox";
+    if (clauses.length > 0) {
+      query += ` WHERE ${clauses.join(" AND ")}`;
+    }
+    query += " ORDER BY created_at ASC";
+    if (params?.limit && params.limit > 0) {
+      query += " LIMIT ?";
+      values.push(params.limit);
+    }
+    const rows = this.getDb()
+      .prepare(query)
+      .all(...values) as JsonRow[];
+    return rows
+      .map((row) => parseJson<NotificationOutboxRecord>(row.record_json))
+      .filter((row): row is NotificationOutboxRecord => Boolean(row));
   }
 
   upsertBaseline(record: BaselineRecord): void {

@@ -52,7 +52,7 @@ import {
 } from "./tool-policy-pipeline.js";
 import {
   applyOwnerOnlyToolPolicy,
-  collectExplicitAllowlist,
+  collectExplicitToolExposure,
   mergeAlsoAllowPolicy,
   resolveToolProfilePolicy,
 } from "./tool-policy.js";
@@ -507,17 +507,20 @@ export function createOpenClawCodingTools(options?: {
         : undefined,
       sandboxed: !!sandbox,
       config: options?.config,
-      pluginToolAllowlist: collectExplicitAllowlist([
-        profilePolicy,
-        providerProfilePolicy,
-        globalPolicy,
-        globalProviderPolicy,
-        agentPolicy,
-        agentProviderPolicy,
-        groupPolicy,
-        sandbox?.tools,
-        subagentPolicy,
-      ]),
+      pluginToolAllowlist: collectExplicitToolExposure({
+        policies: [
+          profilePolicy,
+          providerProfilePolicy,
+          globalPolicy,
+          globalProviderPolicy,
+          agentPolicy,
+          agentProviderPolicy,
+          groupPolicy,
+          sandbox?.tools,
+          subagentPolicy,
+        ],
+        additiveAllowlists: [profileAlsoAllow, providerProfileAlsoAllow],
+      }),
       currentChannelId: options?.currentChannelId,
       currentThreadTs: options?.currentThreadTs,
       currentMessageId: options?.currentMessageId,

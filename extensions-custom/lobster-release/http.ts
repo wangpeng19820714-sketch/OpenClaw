@@ -639,7 +639,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.approveRollback(
+              await runtime.approveRollback(
                 match[2],
                 typeof body.approver === "string" ? body.approver : "api",
               ),
