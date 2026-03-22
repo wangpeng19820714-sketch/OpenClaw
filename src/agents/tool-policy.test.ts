@@ -5,7 +5,6 @@ import type { SandboxToolPolicy } from "./sandbox/types.js";
 import { TOOL_POLICY_CONFORMANCE } from "./tool-policy.conformance.js";
 import {
   applyOwnerOnlyToolPolicy,
-  collectExplicitToolExposure,
   expandToolGroups,
   isOwnerOnlyToolName,
   normalizeToolName,
@@ -75,15 +74,6 @@ describe("tool-policy", () => {
     expect(normalizeToolName(" BASH ")).toBe("exec");
     expect(normalizeToolName("apply-patch")).toBe("apply_patch");
     expect(normalizeToolName("READ")).toBe("read");
-  });
-
-  it("collects plugin tool exposure from alsoAllow entries", () => {
-    expect(
-      collectExplicitToolExposure({
-        policies: [{ allow: ["read"] }],
-        additiveAllowlists: [[" lobster-release ", "release_notifications_drain"]],
-      }),
-    ).toEqual(["read", "lobster-release", "release_notifications_drain"]);
   });
 
   it("identifies owner-only tools", () => {
