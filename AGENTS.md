@@ -200,6 +200,8 @@
 ## Agent-Specific Notes
 
 - Vocabulary: "makeup" = "mac app".
+- Significant failures and user corrections must be logged in `.learnings/`: use `.learnings/ERRORS.md` for major command/tool/integration failures, `.learnings/LEARNINGS.md` for corrections or knowledge gaps, and `.learnings/FEATURE_REQUESTS.md` for requested capabilities that do not exist yet.
+- Use workspace memory files consistently: store durable project facts, stable preferences, and important decisions in `MEMORY.md`; log session-specific context, handoff notes, and recent discoveries in `memory/YYYY-MM-DD.md`; stage oversized external notes in `memory/pending-memories.md`.
 - Never edit `node_modules` (global/Homebrew/npm/git installs too). Updates overwrite. Skill notes go in `tools.md` or `AGENTS.md`.
 - When adding a new `AGENTS.md` anywhere in the repo, also add a `CLAUDE.md` symlink pointing to it (example: `ln -s AGENTS.md CLAUDE.md`).
 - Signal: "update fly" => `fly ssh console -a flawd-bot -C "bash -lc 'cd /data/clawd/openclaw && git pull --rebase origin main'"` then `fly machines restart e825232f34d058 -a flawd-bot`.
