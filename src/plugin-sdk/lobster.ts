@@ -11,4 +11,6 @@ export type {
   OpenClawPluginApi,
   OpenClawPluginToolContext,
   OpenClawPluginToolFactory,
+  PluginLogger,
 } from "../plugins/types.js";
+export { readJsonBodyWithLimit, readRequestBodyWithLimit } from "../infra/http-body.js";

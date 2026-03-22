@@ -66,6 +66,11 @@
 - [ ] 定义 `patch_baseline` 数据模型
 - [ ] 定义 `release_channel_state` 数据模型
 - [ ] 定义 `event_log` 数据模型
+- [ ] 定义 build provenance 数据模型或字段集
+- [ ] 定义 release graph 关系字段
+- [ ] 定义 `rollback_operation` 数据模型
+- [ ] 定义环境维度字段，如 `environment / region / audience`
+- [ ] 定义 `operation_lock` 数据模型
 - [ ] 设计各表主键、唯一键和索引
 - [ ] 设计 release 和 build 的幂等键规则
 - [ ] 设计审计事件保留策略
@@ -80,6 +85,10 @@
 - [ ] 实现渠道指针更新规则
 - [ ] 实现 rollback 时的前版本恢复规则
 - [ ] 实现人工审批与自动发布的互斥规则
+- [ ] 实现稳定版本标记规则
+- [ ] 实现事故版本冻结规则
+- [ ] 实现 channel 级串行锁规则
+- [ ] 实现 rollback 优先级高于普通发布的规则
 
 ## 7. API 设计
 
@@ -91,6 +100,13 @@
 - [ ] 定义 `GET /api/projects/:projectKey/channels/:channel/current`
 - [ ] 定义 `POST /api/projects/:projectKey/releases/:releaseId/approve`
 - [ ] 定义 `POST /api/projects/:projectKey/channels/:channel/rollback`
+- [ ] 定义 `GET /api/projects/:projectKey/releases/:releaseId/graph`
+- [ ] 定义 `GET /api/projects/:projectKey/channels/:channel/graph`
+- [ ] 定义 `GET /api/projects/:projectKey/builds/:buildId/provenance`
+- [ ] 定义 `GET /api/projects/:projectKey/releases/:releaseId/provenance`
+- [ ] 定义 `GET /api/projects/:projectKey/rollbacks/:rollbackId`
+- [ ] 定义 `POST /api/projects/:projectKey/rollbacks/:rollbackId/approve`
+- [ ] 定义 `POST /api/projects/:projectKey/rollbacks/:rollbackId/cancel`
 
 ### baseline API
 
@@ -107,16 +123,18 @@
 
 ## 8. Jenkins 集成
 
-- [ ] 确认 Jenkins 触发方式：`buildWithParameters` 或其他 API
-- [ ] 实现 `lobster-release -> Jenkins` 触发适配层
-- [ ] 定义 Jenkins API token 或凭据加载方式
+- [x] 确认 Jenkins 触发方式：`buildWithParameters` 或其他 API
+- [x] 实现 `lobster-release -> Jenkins` 触发适配层
+- [x] 定义 Jenkins API token 或凭据加载方式
 - [ ] 统一传递 `RELEASE_ID`
 - [ ] 统一传递 `BUILD_ID`
 - [ ] 统一传递 Git 参数
 - [ ] 统一传递构建目标参数
 - [ ] 统一传递 baseline 参数
 - [ ] 统一传递 callback 鉴权参数
-- [ ] 支持 Jenkins queue id / build number 回写
+- [ ] 归档 Jenkins 侧构建环境快照
+- [ ] 归档 Godot 版本、export preset、脚本版本和配置版本
+- [x] 支持 Jenkins queue id / build number 回写
 - [ ] 支持主动轮询 Jenkins 状态
 - [ ] 支持 Jenkins 失败后的重试或人工重触发
 
@@ -124,13 +142,17 @@
 
 - [ ] 定义统一 artifact 结构
 - [ ] 定义 `release_manifest.json` schema
+- [ ] 定义 `manifestVersion` 和兼容性字段
 - [ ] 定义 artifact type 枚举
 - [ ] 实现 `uploaded_artifacts.json` 到内部 artifact 结构的映射
 - [ ] 实现统一下载 URL 生成规则
 - [ ] 实现 SHA-256 校验逻辑
 - [ ] 实现产物去重逻辑
+- [ ] 实现统一产物命名规范
+- [ ] 实现 artifact 不可变规则
 - [ ] 实现 release 级 manifest 生成
 - [ ] 实现 patch 产物与 baseline 的关联记录
+- [ ] 实现产物保留与清理策略
 
 ## 10. 存储与持久化
 
@@ -146,8 +168,8 @@
 
 ## 11. 安全与可靠性
 
-- [ ] 设计 `lobster-release -> Jenkins` 鉴权方案
-- [ ] 设计 `Jenkins -> lobster-release` HMAC 鉴权方案
+- [x] 设计 `lobster-release -> Jenkins` 鉴权方案
+- [x] 设计 `Jenkins -> lobster-release` HMAC 鉴权方案
 - [ ] 加入 `timestamp` 校验
 - [ ] 加入 `nonce` 校验
 - [ ] 加入 `idempotency-key` 校验
@@ -155,6 +177,10 @@
 - [ ] 实现接口级限流或最小保护
 - [ ] 实现失败事件记录
 - [ ] 实现回调失败重试策略
+- [ ] 实现 patch manifest schema 校验
+- [ ] 实现 patch 覆盖冲突检测
+- [ ] 实现客户端兼容性校验
+- [ ] 实现发布前 smoke gate 或最小校验门
 - [ ] 输出联调鉴权文档
 
 ## 12. OpenClaw 集成
@@ -169,8 +195,35 @@
 - [ ] 实现构建失败通知
 - [ ] 实现待审批通知
 - [ ] 实现发布成功通知
+- [ ] 实现 Agent 发布前检查入口
+- [ ] 实现 Agent 自动生成发布说明
+- [ ] 实现 Agent 辅助回滚入口
 
-## 13. 服务骨架与代码结构
+## 13. 发布治理增强
+
+- [ ] 实现 release graph 查询能力
+- [ ] 实现 baseline 继承关系查询
+- [ ] 实现渠道 promote 历史查询
+- [ ] 实现 build provenance 查询能力
+- [ ] 实现稳定版本列表
+- [ ] 实现一键回滚能力
+- [ ] 实现 rollback 后审计记录
+- [ ] 实现 rollback relation edge 写入
+- [ ] 实现事故版本冻结
+- [ ] 实现版本说明或 changelog 归档
+
+## 14. 长期运营能力
+
+- [ ] 支持多项目配置隔离
+- [ ] 支持多环境管理，如 `test / staging / production`
+- [ ] 支持 region 或 audience 维度扩展
+- [ ] 设计灰度发布能力
+- [ ] 设计渠道分流能力
+- [ ] 设计版本与运营数据联动入口
+- [ ] 设计定时构建或夜间构建能力
+- [ ] 设计自动验证或自动 smoke 流程
+
+## 15. 服务骨架与代码结构
 
 - [ ] 创建 `src/` 目录
 - [ ] 创建 `src/server/`
@@ -182,41 +235,59 @@
 - [ ] 创建环境变量示例文件
 - [ ] 创建本地开发启动脚本
 
-## 14. 测试
+## 16. 测试
 
 - [ ] 为版本号校验编写测试
 - [ ] 为版本比较逻辑编写测试
 - [ ] 为状态机编写测试
 - [ ] 为 baseline 选择逻辑编写测试
 - [ ] 为 manifest 生成逻辑编写测试
-- [ ] 为 Jenkins 参数映射编写测试
+- [x] 为 Jenkins 参数映射编写测试
 - [ ] 为回调鉴权编写测试
 - [ ] 为幂等逻辑编写测试
 - [ ] 为 rollback 流程编写测试
+- [ ] 为 release graph 查询编写测试
+- [ ] 为 patch 冲突检测编写测试
+- [ ] 为 operation lock 编写测试
+- [ ] 为 artifact 不可变规则编写测试
+- [ ] 为客户端兼容性校验编写测试
 - [ ] 增加 API 集成测试
 
-## 15. 联调与验收
+## 17. 联调与验收
 
 - [ ] 本地启动 `lobster-release` 服务
 - [ ] 本地模拟创建 release
-- [ ] 本地模拟触发 Jenkins
-- [ ] 验证 Jenkins 参数传递正确
-- [ ] 验证 Jenkins 回传 `publish`
-- [ ] 验证 Jenkins 回传 `finish`
+- [x] 本地模拟触发 Jenkins
+- [x] 验证 Jenkins 参数传递正确
+- [x] 验证 Jenkins 回传 `publish`
+- [x] 验证 Jenkins 回传 `finish`
 - [ ] 验证 `release_manifest.json` 生成正确
 - [ ] 验证渠道状态更新正确
 - [ ] 验证审批流正确
 - [ ] 验证 rollback 流正确
 - [ ] 验证 patch baseline 解析正确
+- [ ] 验证 patch 冲突检测正确
+- [ ] 验证稳定版本标记与冻结规则正确
 - [ ] 验证重复回调幂等处理正确
 
-## 16. 文档
+## 18. 文档
 
 - [x] 输出总体设计文档
 - [x] 输出开发 Checklist
-- [ ] 输出 API 契约文档
-- [ ] 输出 `release_manifest.json` schema 文档
-- [ ] 输出版本号治理文档
+- [x] 输出 API 契约文档
+- [x] 输出数据库 SQL 草案
+- [x] 输出 Jenkins 模板文档
+- [x] 输出热更包结构文档
+- [x] 输出 OpenClaw 集成 JSON 文档
+- [x] 输出 Agent prompt 文档
+- [x] 输出飞书卡片模板文档
+- [x] 输出 `release_manifest.json` schema 文档
+- [x] 输出版本号治理文档
+- [ ] 输出 release graph 说明文档
+- [x] 输出回滚与事故处理文档
+- [ ] 输出并发锁与串行发布说明文档
+- [x] 输出客户端兼容性规则文档
+- [ ] 输出灰度发布设计文档
 - [ ] 输出 Jenkins 集成文档
 - [ ] 输出部署文档
 - [ ] 输出故障排查文档
@@ -225,17 +296,27 @@
 
 - [extensions-custom/lobster-release/docs/release-center-design.md](extensions-custom/lobster-release/docs/release-center-design.md)
 - [extensions-custom/lobster-release/docs/Task_Checklist.md](extensions-custom/lobster-release/docs/Task_Checklist.md)
+- [extensions-custom/lobster-release/docs/database-schema.sql](extensions-custom/lobster-release/docs/database-schema.sql)
+- [extensions-custom/lobster-release/docs/api-contracts.md](extensions-custom/lobster-release/docs/api-contracts.md)
+- [extensions-custom/lobster-release/docs/jenkins-templates.md](extensions-custom/lobster-release/docs/jenkins-templates.md)
+- [extensions-custom/lobster-release/docs/hotupdate-package-structure.md](extensions-custom/lobster-release/docs/hotupdate-package-structure.md)
+- [extensions-custom/lobster-release/docs/openclaw-skill-json.md](extensions-custom/lobster-release/docs/openclaw-skill-json.md)
+- [extensions-custom/lobster-release/docs/agent-prompts.md](extensions-custom/lobster-release/docs/agent-prompts.md)
+- [extensions-custom/lobster-release/docs/feishu-card-templates.md](extensions-custom/lobster-release/docs/feishu-card-templates.md)
+- [extensions-custom/lobster-release/docs/release-manifest-schema.md](extensions-custom/lobster-release/docs/release-manifest-schema.md)
+- [extensions-custom/lobster-release/docs/rollback-and-compatibility.md](extensions-custom/lobster-release/docs/rollback-and-compatibility.md)
+- [extensions-custom/lobster-release/docs/versioning-governance.md](extensions-custom/lobster-release/docs/versioning-governance.md)
 
-## 17. 第一阶段建议验收标准
+## 19. 第一阶段建议验收标准
 
 - [ ] 能创建一个 release
-- [ ] 能由 `lobster-release` 主动触发 Jenkins
-- [ ] 能接收 Jenkins `publish / finish` 回传
+- [x] 能由 `lobster-release` 主动触发 Jenkins
+- [x] 能接收 Jenkins `publish / finish` 回传
 - [ ] 能生成统一 `release_manifest.json`
 - [ ] 能正确记录版本号、渠道、构建号、产物和 baseline
 - [ ] 能在 OpenClaw 中查询当前版本和构建状态
 
-## 18. 下一步优先级
+## 20. 下一步优先级
 
 建议优先顺序：
 
@@ -244,3 +325,5 @@
 3. Jenkins 触发接口与回传接口
 4. `release_manifest.json`
 5. OpenClaw 查询与审批入口
+6. patch 安全机制与回滚
+7. release graph 与长期运营能力

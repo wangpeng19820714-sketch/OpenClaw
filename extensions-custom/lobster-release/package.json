@@ -1,0 +1,22 @@
+{
+  "name": "@openclaw/lobster-release",
+  "version": "0.1.0",
+  "description": "Godot release center for OpenClaw",
+  "keywords": [
+    "godot",
+    "hotupdate",
+    "jenkins",
+    "openclaw",
+    "release"
+  ],
+  "license": "Apache-2.0",
+  "type": "module",
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

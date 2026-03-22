@@ -52,6 +52,183 @@
 - 第一版不做复杂多租户权限系统
 - 第一版不做跨项目通用工作流引擎，先围绕 Godot 游戏发版做深
 
+### 3.1 痛点分层
+
+结合你现在的现状，问题可以分成三层。
+
+第一层是开发阶段痛点：
+
+- 分支和版本混乱，代码状态和版本状态脱节
+- 构建不可复现，依赖个人本地环境和机器差异
+- Godot、脚本、配置表、上传工具、热更工具链入口分散
+
+第二层是版本发布与热更痛点：
+
+- 发布流程靠人记忆，步骤重复且容易漏
+- patch 风险高，baseline、manifest、资源覆盖靠人工保证
+- 版本关系不可视，无法快速回答“这个版本从哪来”
+- 产物命名混乱，文件名不能代表真实版本
+- 出问题时缺少一键回滚和稳定版本定位能力
+- 发布信息散落在聊天、Jenkins、本地目录和个人记忆里
+- 发版依赖某个人，无法标准化交接
+
+第三层是长期运营与规模化痛点：
+
+- 多项目并行后，发布方式和配置越来越分裂
+- 数据表现和版本系统脱节，问题版本无法快速关联
+- 无法做灰度发布、A/B 实验和版本分流
+- 夜间构建、自动 changelog、自动 smoke test 很难长期靠人执行
+- 线上故障缺少版本、patch、渠道三维定位能力
+
+### 3.2 六个根问题
+
+这些现象最终会收敛成六个根问题：
+
+1. 流程没有系统化
+2. 版本没有结构
+3. 构建不可控
+4. 热更没有安全机制
+5. 发布不可追溯
+6. 操作入口分散
+
+`lobster-release` 的设计目标，应该逐项对应解决这六个根问题，而不是只做一个“调 Jenkins 的壳”。
+
+### 3.3 应补充到发布中心的核心功能
+
+基于上面的痛点，我建议把下列能力显式补进设计范围。
+
+#### A. 单一真实来源
+
+目标：
+
+- 所有 release、build、artifact、baseline、channel 状态都只认发布中心
+
+建议补充能力：
+
+- release 主记录
+- build 执行记录
+- artifact 注册表
+- 渠道当前版本指针
+- 发布事件审计日志
+
+#### B. 构建可追溯与可复现
+
+目标：
+
+- 任意一个包都能追到 commit、分支、构建参数、Godot 版本和导出预设
+
+建议补充能力：
+
+- 构建环境快照归档
+- 导出 preset、Godot 版本、脚本版本、配置版本记录
+- build provenance 指纹
+- 同版本 rebuild 标记和区分规则
+
+#### C. 版本拓扑与关系图
+
+目标：
+
+- 明确“哪个版本来自哪个 commit，哪个 patch 基于哪个 baseline，哪个渠道当前指向哪个 release”
+
+建议补充能力：
+
+- release graph
+- baseline 继承关系
+- 渠道 promote 轨迹
+- rollback 前后版本关系记录
+
+#### D. 热更安全网
+
+目标：
+
+- 让 patch 不再靠人工经验兜底
+
+建议补充能力：
+
+- baseline 自动解析和校验
+- patch 产物结构校验
+- manifest schema 校验
+- 资源覆盖白名单或冲突检测
+- 发布前 smoke gate
+- patch 风险分级
+
+#### E. 产物治理
+
+目标：
+
+- 文件名、下载地址和内部记录全部统一，避免“final_v2_new”
+
+建议补充能力：
+
+- 统一产物命名规范
+- artifact 去重规则
+- 统一下载 URL 规则
+- release 级 manifest
+- 产物保留与清理策略
+
+#### F. 审批、通知和 Agent 协同
+
+目标：
+
+- 让发版流程从“找人 + 发消息”变成“系统驱动 + 人工确认”
+
+建议补充能力：
+
+- 待审批状态
+- 飞书或 OpenClaw 通知
+- Agent 执行发布前检查
+- Agent 自动生成发布说明
+- Agent 辅助回滚和事故播报
+
+#### G. 回滚与事故处理
+
+目标：
+
+- 问题出现时快速回到稳定版本，而不是临时翻聊天记录和目录
+
+建议补充能力：
+
+- 稳定版本标记
+- 一键回滚
+- rollback manifest 重建或切换
+- 回滚后的审计记录
+- 事故版本冻结
+
+#### H. 规模化能力
+
+目标：
+
+- 支撑多个项目、多个环境和长期运营
+
+建议补充能力：
+
+- 多项目隔离与共享平台
+- 环境维度管理，例如 test / staging / production
+- 灰度发布和渠道分流
+- 数据系统关联入口
+- 定时构建、夜间构建和自动验证
+
+### 3.4 这些痛点最值得优先解决的功能
+
+按投入产出比，我建议优先级如下。
+
+第一优先级：
+
+1. 构建自动化与构建可追溯
+2. 发布记录系统与版本状态中心
+3. 飞书或 OpenClaw 自动通知
+
+第二优先级：
+
+4. patch + manifest 安全机制
+5. 一键回滚和稳定版本管理
+
+第三优先级：
+
+6. 灰度发布
+7. Agent 自动发布和自动检查
+8. 版本与运营数据联动
+
 ## 4. 推荐产品形态
 
 建议分两层：
@@ -219,6 +396,236 @@
 - `payload_json`
 - `created_at`
 
+### 5.8 release_relation
+
+这是 `release graph` 的核心数据结构。建议不要把“版本关系图”只做成前端视图，而是做成真正可查询的关系模型。
+
+推荐做法：
+
+- `release` 作为节点
+- `release_relation` 作为边
+- `channel_state` 作为当前指针
+
+关键字段：
+
+- `relation_id`
+- `project_id`
+- `from_release_id`
+- `to_release_id`
+- `relation_type`
+- `context_json`
+- `created_by`
+- `created_at`
+
+`relation_type` 建议至少支持：
+
+- `derived_from`
+  中文含义：新版本由旧版本演进而来
+- `patch_based_on`
+  中文含义：patch 基于哪个 baseline release 生成
+- `promoted_from`
+  中文含义：渠道推进，例如从 `beta` 推到 `release`
+- `rolled_back_to`
+  中文含义：当前版本回滚到了哪个旧版本
+- `rebuilt_from`
+  中文含义：同一版本号的重建关系
+- `replaced_by`
+  中文含义：当前 release 被后续 release 替换
+
+`context_json` 建议记录：
+
+- 操作时的 channel
+- baseline version
+- operator
+- comment
+- source build id
+- target build id
+
+推荐索引：
+
+- `(project_id, from_release_id)`
+- `(project_id, to_release_id)`
+- `(project_id, relation_type, created_at)`
+
+这样可以支持：
+
+- 查询某个 release 的上下游关系
+- 查询当前渠道历史推进链
+- 查询某次 rollback 的来源和目标
+- 查询 patch 的 baseline 祖先链
+
+### 5.9 build_provenance
+
+这是“构建可追溯”的核心对象。建议单独建表或单独持久化对象，不要把它散落在 `build.metadata` 里。
+
+关键字段：
+
+- `provenance_id`
+- `build_id`
+- `release_id`
+- `source_git_url`
+- `source_git_branch`
+- `source_git_commit`
+- `source_git_commit_short`
+- `source_git_tag`
+- `workspace_revision`
+- `jenkins_job`
+- `jenkins_build_number`
+- `jenkins_queue_id`
+- `executor_node`
+- `executor_label`
+- `godot_version`
+- `godot_bin`
+- `dotnet_version`
+- `export_presets`
+- `build_targets`
+- `baseline_version`
+- `baseline_manifest_url`
+- `config_fingerprint`
+- `asset_groups_fingerprint`
+- `scripts_fingerprint`
+- `env_snapshot_json`
+- `parameters_json`
+- `provenance_hash`
+- `captured_at`
+
+这里的 `provenance_hash` 建议作为“这次构建输入是否一致”的总指纹。
+
+可以把以下内容归一化后再 hash：
+
+- git commit
+- 目标平台
+- export preset
+- baseline 参数
+- Godot 版本
+- dotnet 版本
+- asset_groups 指纹
+- 配置表指纹
+
+这样能直接回答两个关键问题：
+
+- 这次构建是不是和上次输入完全一致
+- 同一个版本号为什么产物不同
+
+### 5.10 rollback_operation
+
+回滚最好建成一个显式对象，不要只在 `release.status` 或 `event_log` 里留痕。
+
+关键字段：
+
+- `rollback_id`
+- `project_id`
+- `channel`
+- `environment`
+- `from_release_id`
+- `to_release_id`
+- `status`
+- `reason`
+- `triggered_by`
+- `approved_by`
+- `strategy`
+- `manifest_action`
+- `created_at`
+- `completed_at`
+
+`status` 建议支持：
+
+- `requested`
+- `approved`
+- `executing`
+- `completed`
+- `failed`
+- `canceled`
+
+`strategy` 建议支持：
+
+- `pointer_switch`
+  中文含义：只切渠道指针，最快，默认优先
+- `manifest_republish`
+  中文含义：重新发布 manifest 指向旧版本
+- `rebuild_and_publish`
+  中文含义：重新构建旧版本再发布，成本最高，默认不优先
+
+`manifest_action` 用于记录：
+
+- 是否复用旧 manifest
+- 是否重新生成回滚 manifest
+- 是否冻结当前事故版本
+
+### 5.11 三者之间的关系
+
+建议把这三块连起来看：
+
+- `release_relation` 解决“版本之间是什么关系”
+- `build_provenance` 解决“这个包到底是怎么打出来的”
+- `rollback_operation` 解决“出了问题后怎么安全回到旧版本”
+
+三者配合后，发布中心和普通 Jenkins 面板的差异才真正成立。
+
+### 5.12 environment_scope
+
+建议第一版就把环境维度纳入模型，不要等后面再补。
+
+关键字段：
+
+- `environment`
+- `channel`
+- `region`
+- `audience`
+
+推荐默认值：
+
+- `environment`: `test | staging | production`
+- `channel`: `dev | beta | release`
+
+原因：
+
+- 同样是 `beta`，测试环境和正式环境通常不是一回事
+- rollback、promote、graph 查询都必须带环境上下文才安全
+- 后续灰度发布和 A/B 实验也会依赖环境维度
+
+建议至少在这些对象上带上 `environment`：
+
+- `release`
+- `build`
+- `release_channel_state`
+- `rollback_operation`
+
+### 5.13 operation_lock
+
+发布中心需要自己的轻量锁，不然很容易出现并发事故。
+
+典型冲突：
+
+- 同一 channel 同时 promote 和 rollback
+- 同一 release 同时审批和冻结
+- Jenkins 回传和人工回滚同时修改 channel pointer
+
+建议锁模型字段：
+
+- `lock_id`
+- `project_id`
+- `environment`
+- `lock_scope`
+- `lock_key`
+- `owner`
+- `reason`
+- `expires_at`
+- `created_at`
+
+`lock_scope` 建议支持：
+
+- `channel`
+- `release`
+- `build`
+- `rollback`
+
+推荐规则：
+
+- 同一 `project + environment + channel` 在执行 promote/rollback 时必须串行
+- 锁必须可超时回收
+- 回滚优先级应高于普通发布
+
 ## 6. 推荐状态机
 
 建议统一状态流，不要让 Jenkins 随意写任何状态。
@@ -244,6 +651,41 @@
 - 只有人工批准或自动规则命中后，`built` 才能推进到 `published`
 
 这能避免“Jenkins 一跑完就算发布成功”的状态污染。
+
+### 6.1 rollback 推荐规则
+
+`rollback` 不应该被理解成“重新打一遍旧包”，而应优先理解成“把渠道恢复到已知稳定版本”。
+
+推荐顺序：
+
+1. 优先 `pointer_switch`
+2. 其次 `manifest_republish`
+3. 最后才考虑 `rebuild_and_publish`
+
+默认约束：
+
+- 只能回滚到同项目、同环境、同平台策略兼容的 release
+- 默认只能回滚到 `stable` 或明确标记为可回滚的 release
+- 当前事故版本在 rollback 成功后应自动冻结，禁止再次 promote
+- rollback 也必须留下 relation edge 和 audit event
+
+回滚前最少校验：
+
+- 目标 release 的 artifact 是否仍然可下载
+- 目标 release 的 manifest 是否完整
+- patch baseline 是否仍然兼容
+- 当前渠道是否被更高优先级操作锁定
+
+### 6.2 并发与锁规则
+
+建议把这些规则直接固化：
+
+- 同一 channel 上同一时刻只允许一个“变更渠道指针”的操作
+- `publish`、`promote`、`rollback` 之间必须经过锁协调
+- `rollback` 成功后应自动释放相关锁
+- 失败的长时间锁要支持 TTL 回收和人工强制解除
+
+如果不做这层，越到后面多人协作越容易把状态写乱。
 
 ## 7. 版本号治理建议
 
@@ -466,7 +908,7 @@
 
 这样 Jenkins 端改动会更小，业务中心也更清晰。
 
-### 7.1 发布中心内部 API
+### 8.1 发布中心内部 API
 
 建议先有这几个入口：
 
@@ -502,7 +944,145 @@
 - `jenkinsJob`
 - `status`
 
-### 7.2 发布中心到 Jenkins
+### 8.2 release graph API
+
+建议把 graph 能力直接做成正式 API，而不是只在后台拼 SQL。
+
+`GET /api/projects/:projectKey/releases/:releaseId/graph`
+
+作用：
+
+- 查询某个 release 的上下游关系
+- 查看它从哪来、被谁替代、是否参与过 promote、是否参与过 rollback
+
+查询参数建议：
+
+- `direction`
+  可选：`upstream | downstream | both`
+- `depth`
+  默认建议 `3`
+- `relationTypes`
+  可选过滤
+
+返回结构建议：
+
+```json
+{
+  "releaseId": "rel_001",
+  "nodes": [
+    {
+      "releaseId": "rel_001",
+      "version": "1.2.3",
+      "channel": "beta",
+      "status": "published"
+    }
+  ],
+  "edges": [
+    {
+      "relationType": "patch_based_on",
+      "fromReleaseId": "rel_000",
+      "toReleaseId": "rel_001"
+    }
+  ]
+}
+```
+
+`GET /api/projects/:projectKey/channels/:channel/graph`
+
+作用：
+
+- 查询一个渠道的版本演进链
+- 适合看测试服、预发布服、正式服的推进历史
+
+### 8.3 build provenance API
+
+`GET /api/projects/:projectKey/builds/:buildId/provenance`
+
+作用：
+
+- 查询一次 build 的完整构建来源和输入
+- 用于解释“这个包是谁、何时、基于什么环境打出来的”
+
+返回建议包含：
+
+- git 信息
+- Jenkins 信息
+- Godot / dotnet / preset 信息
+- baseline 信息
+- 参数快照
+- provenance hash
+
+`GET /api/projects/:projectKey/releases/:releaseId/provenance`
+
+作用：
+
+- 直接查询某个 release 当前关联的 provenance
+- 如果存在多次 rebuild，可返回最新一次或全部历史
+
+### 8.4 rollback API
+
+`POST /api/projects/:projectKey/channels/:channel/rollback`
+
+作用：
+
+- 创建一次正式 rollback 请求
+
+请求体建议：
+
+```json
+{
+  "targetReleaseId": "rel_stable_123",
+  "reason": "production crash after patch publish",
+  "strategy": "pointer_switch",
+  "freezeCurrentRelease": true,
+  "comment": "rollback after smoke failure"
+}
+```
+
+返回建议：
+
+- `rollbackId`
+- `fromReleaseId`
+- `toReleaseId`
+- `status`
+- `strategy`
+
+`GET /api/projects/:projectKey/rollbacks/:rollbackId`
+
+作用：
+
+- 查询 rollback 执行状态和审计记录
+
+`POST /api/projects/:projectKey/rollbacks/:rollbackId/approve`
+
+作用：
+
+- 对需要人工审批的 rollback 进行确认
+
+`POST /api/projects/:projectKey/rollbacks/:rollbackId/cancel`
+
+作用：
+
+- 取消尚未执行完成的 rollback
+
+### 8.5 rollback 执行结果建议
+
+返回结构建议包含：
+
+- `channelBefore`
+- `channelAfter`
+- `frozenReleaseId`
+- `relationEdgeId`
+- `manifestUrl`
+- `warnings`
+
+这样回滚完成后，调用方能立刻知道：
+
+- 当前渠道已经指向哪个 release
+- 哪个事故版本已经被冻结
+- manifest 是否已经切换成功
+
+### 8.6 发布中心到 Jenkins
 
 这层不是给人用的业务 API，而是 `lobster-release` 对 Jenkins 的适配。
 
@@ -533,7 +1113,7 @@
 - `CALLBACK_BASE_URL`
 - `CALLBACK_TOKEN`
 
-### 7.3 查询 patch baseline
+### 8.7 查询 patch baseline
 
 `GET /api/projects/:projectKey/baselines/resolve`
 
@@ -551,7 +1131,7 @@
 - `baselineReleaseId`
 - `patchStrategy`
 
-### 7.4 Jenkins 回传产物发布
+### 8.8 Jenkins 回传产物发布
 
 `POST /api/projects/:projectKey/builds/:buildId/publish`
 
@@ -563,7 +1143,7 @@
 - 补全统一 `download_url`
 - 生成 release 级别 `release_manifest.json`
 
-### 7.5 Jenkins 回传构建完成
+### 8.9 Jenkins 回传构建完成
 
 `POST /api/projects/:projectKey/builds/:buildId/finish`
 
@@ -582,13 +1162,24 @@
 - `beta` 建议进入待审批
 - `release` 必须人工审批
 
-### 7.6 Jenkins 回传构建开始
+### 8.10 Jenkins 回传构建开始
 
 如果你希望构建审计更完整，也可以保留一个很轻量的开始回传：
 
 `POST /api/projects/:projectKey/builds/:buildId/start`
 
 但这个接口不负责创建 build，只负责补齐实际启动时间、agent、executor、queue 信息。
+
+### 8.11 三个能力的联动方式
+
+推荐让这三条 API 链路形成闭环：
+
+1. 用户查看某个 release 的 `graph`
+2. 发现问题后查看对应 `provenance`
+3. 决定对某个 channel 发起 `rollback`
+4. rollback 完成后新增一条 `rolled_back_to` relation edge
+
+这样你后面做 UI、Agent 指令或事故排查时，路径会非常清晰。
 
 ## 9. 推荐控制流
 
@@ -659,9 +1250,49 @@
 - 具体存储介质可以换，但 manifest 字段尽量稳定
 - 所有下载地址都从 manifest 派生，而不是靠命名规则硬猜
 
+### 10.1 manifest 还应补充的字段
+
+对于游戏发布和热更，我建议 `release_manifest.json` 额外带这些字段：
+
+- `manifestVersion`
+- `environment`
+- `compatibility`
+- `stable`
+- `provenanceHash`
+- `rollbackTarget`
+
+示例语义：
+
+- `manifestVersion`
+  中文含义：manifest schema 版本，避免客户端解析规则失配
+- `compatibility`
+  中文含义：客户端兼容窗口，例如最低客户端版本、最低资源协议版本
+- `stable`
+  中文含义：是否可作为稳定回滚点
+- `provenanceHash`
+  中文含义：这次构建输入的追溯指纹
+- `rollbackTarget`
+  中文含义：建议回滚目标或上一个稳定版本
+
+### 10.2 产物不可变规则
+
+建议发布中心明确采用“产物不可变”原则。
+
+规则建议：
+
+- 同一个 artifact URL 一经发布，不允许原地覆盖
+- 重新构建必须生成新的 build id 和新的 artifact 路径
+- manifest 可以前移指针，但 artifact 本身应保持不可变
+
+这样才能保证：
+
+- 回滚时能信任旧产物
+- CDN 缓存行为可预期
+- 审计记录可成立
+
 ## 11. 存储与部署建议
 
-### 9.1 元数据存储
+### 11.1 元数据存储
 
 第一版建议：
 
@@ -675,7 +1306,7 @@
 - 本地验证阶段用 SQLite
 - 准备正式接 Jenkins 和多人使用时切 PostgreSQL
 
-### 9.2 文件存储
+### 11.2 文件存储
 
 不要把大文件存进 OpenClaw 扩展目录。
 
@@ -692,7 +1323,7 @@
 - sha256
 - size
 
-### 9.3 服务部署
+### 11.3 服务部署
 
 建议先做成一个独立的 custom extension 服务目录，但运行形态不要被“必须是 OpenClaw 内嵌插件”绑死。
 
@@ -712,7 +1343,7 @@
 
 这部分必须第一版就有，不然后面补会很痛。
 
-### 10.1 鉴权
+### 12.1 鉴权
 
 建议分两段鉴权：
 
@@ -732,7 +1363,7 @@
 - 时间窗口未过期
 - `idempotency-key` 未重复消费
 
-### 10.2 幂等
+### 12.2 幂等
 
 建议以下接口都幂等：
 
@@ -750,7 +1381,19 @@
 - `gamexpert:28:publish`
 - `gamexpert:28:finish`
 
-### 10.3 重试
+### 12.3 重试
+
+### 12.4 客户端兼容性校验
+
+除了服务端 API 鉴权，发布中心还应该承担一层“客户端兼容性守门”。
+
+建议最少校验：
+
+- patch manifest 的 schema version 是否匹配客户端能力
+- 目标 release 的最低客户端版本是否高于当前渠道存量客户端
+- 资源协议版本是否兼容
+
+对于 Godot 热更，这一步很重要，因为很多事故不是“构建失败”，而是“客户端加载成功但运行失败”。
 
 建议由两边共同保证：
 
@@ -763,28 +1406,28 @@
 
 如果你想让这个东西真正像“发布中心”而不是“一个回调 API”，OpenClaw 这侧建议至少做下面几类能力。
 
-### 11.1 查询类
+### 13.1 查询类
 
 - `/release latest gamexpert beta`
 - `/release show 0.0.1`
 - `/release artifacts 0.0.1`
 - `/release baseline android beta`
 
-### 11.2 审批类
+### 13.2 审批类
 
 - `/release approve 0.0.1 beta`
 - `/release reject 0.0.1`
 - `/release promote 0.0.1 release`
 - `/release rollback beta`
 
-### 11.3 通知类
+### 13.3 通知类
 
 - Jenkins 开始构建时发通知
 - 构建失败时把日志摘要推送到指定群或频道
 - 待发布审批时通知负责人
 - 发布成功后自动发版本摘要
 
-### 11.4 自动化类
+### 13.4 自动化类
 
 后续可接 Lobster 工作流做：
 

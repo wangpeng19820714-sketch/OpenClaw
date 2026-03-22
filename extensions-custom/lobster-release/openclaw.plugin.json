@@ -1,0 +1,131 @@
+{
+  "id": "lobster-release",
+  "name": "Lobster Release",
+  "description": "Release center for Godot build, patch, rollback, and approval workflows.",
+  "uiHints": {
+    "defaultProjectKey": {
+      "label": "Default Project Key",
+      "help": "Used when tool or HTTP calls omit projectKey.",
+      "placeholder": "gamexpert"
+    },
+    "defaultEnvironment": {
+      "label": "Default Environment",
+      "help": "Default environment used for release creation and CI callbacks.",
+      "placeholder": "staging"
+    },
+    "defaultChannel": {
+      "label": "Default Channel",
+      "help": "Default release channel used for release creation and CI callbacks.",
+      "placeholder": "beta"
+    },
+    "routePrefix": {
+      "label": "Route Prefix",
+      "help": "HTTP prefix for plugin-owned API endpoints.",
+      "placeholder": "/plugins/lobster-release/api"
+    },
+    "ciRoutePrefix": {
+      "label": "CI Route Prefix",
+      "help": "HTTP prefix compatible with existing Jenkins lobster scripts.",
+      "placeholder": "/api/ci/v1"
+    },
+    "publicBaseUrl": {
+      "label": "Public Base URL",
+      "help": "Optional public base URL used to derive manifest and artifact URLs.",
+      "placeholder": "https://release.example.com"
+    },
+    "callbackToken": {
+      "label": "Callback Token",
+      "help": "Shared secret for Jenkins callback HMAC verification.",
+      "sensitive": true
+    },
+    "ciApiKey": {
+      "label": "CI API Key",
+      "help": "API key expected from Jenkins X-Lobster-Key header.",
+      "sensitive": true
+    },
+    "ciApiSecret": {
+      "label": "CI API Secret",
+      "help": "Shared secret used to verify Jenkins X-Lobster-Signature.",
+      "sensitive": true
+    },
+    "jenkinsBaseUrl": {
+      "label": "Jenkins Base URL",
+      "help": "Optional Jenkins base URL for build trigger.",
+      "placeholder": "https://jenkins.example.com"
+    },
+    "jenkinsJob": {
+      "label": "Jenkins Job",
+      "help": "Default Jenkins job name for release builds.",
+      "placeholder": "GameXpert_Godot_CI"
+    },
+    "jenkinsUser": {
+      "label": "Jenkins User",
+      "help": "Optional Jenkins API user."
+    },
+    "jenkinsApiToken": {
+      "label": "Jenkins API Token",
+      "help": "Optional Jenkins API token.",
+      "sensitive": true
+    },
+    "jenkinsLobsterApiKeyCredentialsId": {
+      "label": "Jenkins Lobster Key Cred ID",
+      "help": "Optional Jenkins Secret Text credentials ID for LOBSTER_API_KEY."
+    },
+    "jenkinsLobsterApiSecretCredentialsId": {
+      "label": "Jenkins Lobster Secret Cred ID",
+      "help": "Optional Jenkins Secret Text credentials ID for LOBSTER_API_SECRET."
+    },
+    "jenkinsAndroidKeystoreBase64CredentialsId": {
+      "label": "Android Keystore Base64 Cred ID",
+      "help": "Optional Jenkins Secret Text credentials ID for ANDROID_KEYSTORE_BASE64."
+    },
+    "jenkinsAndroidKeystoreAliasCredentialsId": {
+      "label": "Android Keystore Alias Cred ID",
+      "help": "Optional Jenkins Secret Text credentials ID for ANDROID_KEYSTORE_ALIAS."
+    },
+    "jenkinsAndroidKeystorePasswordCredentialsId": {
+      "label": "Android Keystore Password Cred ID",
+      "help": "Optional Jenkins Secret Text credentials ID for ANDROID_KEYSTORE_PASSWORD."
+    },
+    "uploadDestinationDir": {
+      "label": "Upload Destination Dir",
+      "help": "Optional filesystem path where Jenkins copies exported artifacts before the publish callback."
+    },
+    "uploadBaseUrl": {
+      "label": "Upload Base URL",
+      "help": "Optional base URL prefixed onto uploaded artifact relative paths."
+    },
+    "autoPublishDev": {
+      "label": "Auto Publish Dev",
+      "help": "Automatically publish successful dev builds.",
+      "placeholder": "true"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "defaultProjectKey": { "type": "string" },
+      "defaultEnvironment": { "type": "string" },
+      "defaultChannel": { "type": "string" },
+      "routePrefix": { "type": "string" },
+      "ciRoutePrefix": { "type": "string" },
+      "publicBaseUrl": { "type": "string" },
+      "callbackToken": { "type": "string" },
+      "ciApiKey": { "type": "string" },
+      "ciApiSecret": { "type": "string" },
+      "jenkinsBaseUrl": { "type": "string" },
+      "jenkinsJob": { "type": "string" },
+      "jenkinsUser": { "type": "string" },
+      "jenkinsApiToken": { "type": "string" },
+      "jenkinsLobsterApiKeyCredentialsId": { "type": "string" },
+      "jenkinsLobsterApiSecretCredentialsId": { "type": "string" },
+      "jenkinsAndroidKeystoreBase64CredentialsId": { "type": "string" },
+      "jenkinsAndroidKeystoreAliasCredentialsId": { "type": "string" },
+      "jenkinsAndroidKeystorePasswordCredentialsId": { "type": "string" },
+      "uploadDestinationDir": { "type": "string" },
+      "uploadBaseUrl": { "type": "string" },
+      "autoPublishDev": { "type": "boolean" }
+    }
+  }
+}
