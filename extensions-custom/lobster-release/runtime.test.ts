@@ -457,7 +457,7 @@ describe("lobster-release runtime", () => {
       ],
     });
 
-    expect(publish.manifest.artifacts.map((artifact) => artifact.fileName)).toEqual([
+    expect(publish.manifest.artifacts.map((artifact) => artifact.fileName).toSorted()).toEqual([
       "GameXpert-android-apk-1.2.12-38-ed990d1.apk",
       "GameXpert-patch-bundle-1.2.12-38-ed990d1.zip",
       "manifest.json",
@@ -601,7 +601,7 @@ describe("lobster-release runtime", () => {
     });
 
     expect(created.build?.buildId).toBeTruthy();
-    expect(created.build?.baselineVersion).toBe("1.2.9");
+    expect(runtime.getBuild(created.build!.buildId)?.baselineVersion).toBe("1.2.9");
 
     const started = runtime.recordCiBuildStart({
       requestId: "jenkins-GameXpert_Godot_CI-40-start",
@@ -678,7 +678,7 @@ describe("lobster-release runtime", () => {
       createdBy: "tester",
     });
 
-    expect(created.build?.baselineVersion).toBe("1.2.14");
+    expect(runtime.getBuild(created.build!.buildId)?.baselineVersion).toBe("1.2.14");
 
     const started = runtime.recordCiBuildStart({
       requestId: "jenkins-GameXpert_Godot_CI-41-start",

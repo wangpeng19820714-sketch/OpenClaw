@@ -314,6 +314,7 @@
     "test:docker:qr": "bash scripts/e2e/qr-import-docker.sh",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:extensions": "vitest run --config vitest.extensions.config.ts",
+    "test:extensions-custom": "vitest run --config vitest.extensions-custom.config.ts",
     "test:fast": "vitest run --config vitest.unit.config.ts",
     "test:force": "node --import tsx scripts/test-force.ts",
     "test:gateway": "vitest run --config vitest.gateway.config.ts --pool=forks",

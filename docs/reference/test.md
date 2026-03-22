@@ -14,7 +14,8 @@ title: "Tests"
 - `pnpm test` on Node 24+: OpenClaw auto-disables Vitest `vmForks` and uses `forks` to avoid `ERR_VM_MODULE_LINK_FAILURE` / `module is already linked`. You can force behavior with `OPENCLAW_TEST_VM_FORKS=0|1`.
 - `pnpm test`: runs the fast core unit lane by default for quick local feedback.
 - `pnpm test:channels`: runs channel-heavy suites.
-- `pnpm test:extensions`: runs extension/plugin suites.
+- `pnpm test:extensions`: runs extension/plugin suites, including `extensions-custom/**`.
+- `pnpm test:extensions-custom`: runs only custom extension suites such as `extensions-custom/lobster-release/**`.
 - Gateway integration: opt-in via `OPENCLAW_TEST_INCLUDE_GATEWAY=1 pnpm test` or `pnpm test:gateway`.
 - `pnpm test:e2e`: Runs gateway end-to-end smoke tests (multi-instance WS/HTTP/node pairing). Defaults to `vmForks` + adaptive workers in `vitest.e2e.config.ts`; tune with `OPENCLAW_E2E_WORKERS=<n>` and set `OPENCLAW_E2E_VERBOSE=1` for verbose logs.
 - `pnpm test:live`: Runs provider live tests (minimax/zai). Requires API keys and `LIVE=1` (or provider-specific `*_LIVE_TEST=1`) to unskip.
