@@ -46,6 +46,7 @@ const NOTIFICATION_SENDING_TIMEOUT_MS = 5 * 60_000;
 const NOTIFICATION_RETRY_BASE_MS = 60_000;
 const NOTIFICATION_MAX_ATTEMPTS = 5;
 const TERMINAL_BUILD_STATUSES = new Set<BuildRecord["status"]>(["finished", "failed", "canceled"]);
+const PATCH_CONFLICT_PATH_SEPARATOR = "/";
 
 function buildStatusRank(status: BuildRecord["status"]): number {
   switch (status) {
@@ -997,6 +998,281 @@ export class LobsterReleaseRuntime {
     ].join("\u001f");
   }
 
+  private async pathExists(filePath: string): Promise<boolean> {
+    try {
+      await fs.access(filePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async resolveArtifactFilePath(
+    artifact: Pick<ArtifactRecord, "storagePath">,
+  ): Promise<string | undefined> {
+    const storagePath = artifact.storagePath.trim();
+    if (!storagePath) {
+      return undefined;
+    }
+    if (path.isAbsolute(storagePath)) {
+      return (await this.pathExists(storagePath)) ? storagePath : undefined;
+    }
+    const candidates = [
+      this.config.uploadDestinationDir
+        ? path.join(this.config.uploadDestinationDir, storagePath)
+        : undefined,
+      path.join(this.stateDir, storagePath),
+    ].filter((candidate): candidate is string => Boolean(candidate));
+    for (const candidate of candidates) {
+      if (await this.pathExists(candidate)) {
+        return candidate;
+      }
+    }
+    return undefined;
+  }
+
+  private async readArtifactJson<T>(
+    artifact: Pick<ArtifactRecord, "storagePath">,
+  ): Promise<T | undefined> {
+    const filePath = await this.resolveArtifactFilePath(artifact);
+    if (!filePath) {
+      return undefined;
+    }
+    return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
+  }
+
+  private normalizePatchItemPath(rawPath: string): string {
+    return rawPath
+      .trim()
+      .replace(/\\/g, PATCH_CONFLICT_PATH_SEPARATOR)
+      .replace(/^\.\//, "")
+      .replace(/\/{2,}/g, PATCH_CONFLICT_PATH_SEPARATOR);
+  }
+
+  private validatePatchManifestSchema(
+    release: ReleaseRecord,
+    build: BuildRecord,
+    patchManifest: Record<string, unknown>,
+    patchBundle?: ArtifactRecord | null,
+  ): void {
+    if (typeof patchManifest.manifestVersion === "number") {
+      if (patchManifest.project !== release.projectKey) {
+        throw new Error("patch manifest project does not match release");
+      }
+      if (patchManifest.environment !== release.environment) {
+        throw new Error("patch manifest environment does not match release");
+      }
+      if (patchManifest.channel !== release.channel) {
+        throw new Error("patch manifest channel does not match release");
+      }
+      if (patchManifest.version !== release.version) {
+        throw new Error("patch manifest version does not match release");
+      }
+      const compatibility =
+        patchManifest.compatibility && typeof patchManifest.compatibility === "object"
+          ? (patchManifest.compatibility as Record<string, unknown>)
+          : undefined;
+      if (!compatibility || typeof compatibility.resourceProtocolVersion !== "number") {
+        throw new Error("patch manifest missing compatibility.resourceProtocolVersion");
+      }
+      if (build.baselineVersion) {
+        const baseline =
+          patchManifest.baseline && typeof patchManifest.baseline === "object"
+            ? (patchManifest.baseline as Record<string, unknown>)
+            : undefined;
+        const baselineVersion = typeof baseline?.version === "string" ? baseline.version : "";
+        if (baselineVersion !== build.baselineVersion) {
+          throw new Error("patch manifest baseline version does not match build baseline");
+        }
+      }
+      if (!patchBundle) {
+        return;
+      }
+      const bundleZip =
+        patchManifest.bundleZip && typeof patchManifest.bundleZip === "object"
+          ? (patchManifest.bundleZip as Record<string, unknown>)
+          : undefined;
+      const bundleFileName = typeof bundleZip?.fileName === "string" ? bundleZip.fileName : "";
+      if (bundleFileName && bundleFileName !== patchBundle.fileName) {
+        throw new Error("patch manifest bundleZip.fileName does not match uploaded patch bundle");
+      }
+      return;
+    }
+    if (typeof patchManifest.format_version === "number") {
+      const packages =
+        patchManifest.packages && typeof patchManifest.packages === "object"
+          ? (patchManifest.packages as Record<string, unknown>)
+          : undefined;
+      if (!packages) {
+        throw new Error("patch manifest missing packages object");
+      }
+      const rawFiles =
+        patchManifest.raw_files && typeof patchManifest.raw_files === "object"
+          ? (patchManifest.raw_files as Record<string, unknown>)
+          : undefined;
+      if (!rawFiles) {
+        throw new Error("patch manifest missing raw_files object");
+      }
+      return;
+    }
+    throw new Error("patch manifest schema is not recognized");
+  }
+
+  private validatePatchListSchema(
+    patchList: Record<string, unknown>,
+  ): Array<{ path: string; op: string; sha256?: string }> {
+    if (Array.isArray(patchList.items)) {
+      return patchList.items.map((item, index) => {
+        if (!item || typeof item !== "object") {
+          throw new Error(`patch_list item ${index} is not an object`);
+        }
+        const record = item as Record<string, unknown>;
+        const itemPath =
+          typeof record.path === "string" ? this.normalizePatchItemPath(record.path) : "";
+        const op = typeof record.op === "string" ? record.op.trim() : "";
+        if (!itemPath) {
+          throw new Error(`patch_list item ${index} missing path`);
+        }
+        if (!op) {
+          throw new Error(`patch_list item ${index} missing op`);
+        }
+        return {
+          path: itemPath,
+          op,
+          sha256: typeof record.sha256 === "string" ? record.sha256 : undefined,
+        };
+      });
+    }
+    const actualEntries: Array<{ path: string; op: string; sha256?: string }> = [];
+    const appendEntries = (entries: unknown, label: string) => {
+      if (!Array.isArray(entries)) {
+        return;
+      }
+      for (const [index, item] of entries.entries()) {
+        if (!item || typeof item !== "object") {
+          throw new Error(`patch_list ${label}[${index}] is not an object`);
+        }
+        const record = item as Record<string, unknown>;
+        const rawPath =
+          typeof record.file === "string"
+            ? record.file
+            : typeof record.logical_name === "string"
+              ? record.logical_name
+              : "";
+        const itemPath = rawPath ? this.normalizePatchItemPath(rawPath) : "";
+        if (!itemPath) {
+          throw new Error(`patch_list ${label}[${index}] missing file path`);
+        }
+        actualEntries.push({
+          path: itemPath,
+          op: "replace",
+          sha256:
+            typeof record.hash === "string"
+              ? record.hash
+              : typeof record.sha256 === "string"
+                ? record.sha256
+                : undefined,
+        });
+      }
+    };
+    appendEntries(patchList.download_bundles, "download_bundles");
+    appendEntries(patchList.download_raw_files, "download_raw_files");
+    if (actualEntries.length > 0) {
+      return actualEntries;
+    }
+    throw new Error("patch_list schema is not recognized");
+  }
+
+  private detectPatchListConflicts(
+    items: Array<{ path: string; op: string; sha256?: string }>,
+  ): string[] {
+    const seen = new Map<string, { op: string; sha256?: string }>();
+    const conflicts = new Set<string>();
+    for (const item of items) {
+      const previous = seen.get(item.path);
+      if (!previous) {
+        seen.set(item.path, { op: item.op, sha256: item.sha256 });
+        continue;
+      }
+      if (previous.op !== item.op || previous.sha256 !== item.sha256) {
+        conflicts.add(item.path);
+        continue;
+      }
+      conflicts.add(item.path);
+    }
+    return [...conflicts];
+  }
+
+  private async validatePatchArtifacts(
+    release: ReleaseRecord,
+    build: BuildRecord,
+    artifacts: ArtifactRecord[],
+  ): Promise<Record<string, unknown> | undefined> {
+    if (!build.targets.patch) {
+      return undefined;
+    }
+    const hasPatchArtifacts = artifacts.some(
+      (artifact) =>
+        artifact.artifactType === "patch_bundle" ||
+        artifact.artifactType === "patch_manifest" ||
+        artifact.artifactType === "patch_list",
+    );
+    if (!hasPatchArtifacts) {
+      return undefined;
+    }
+    const patchManifestArtifact = artifacts.find(
+      (artifact) => artifact.artifactType === "patch_manifest",
+    );
+    if (!patchManifestArtifact) {
+      throw new Error("patch build missing patch_manifest artifact");
+    }
+    const patchManifestPath = await this.resolveArtifactFilePath(patchManifestArtifact);
+    if (!patchManifestPath) {
+      return {
+        valid: false,
+        skipped: true,
+        reason: "patch manifest file unavailable for local validation",
+      };
+    }
+    const patchManifest =
+      await this.readArtifactJson<Record<string, unknown>>(patchManifestArtifact);
+    if (!patchManifest) {
+      throw new Error(`patch manifest file not found: ${patchManifestArtifact.storagePath}`);
+    }
+    const patchBundle = this.selectPatchBundleArtifact(artifacts);
+    this.validatePatchManifestSchema(release, build, patchManifest, patchBundle);
+    const patchListArtifact = artifacts.find((artifact) => artifact.artifactType === "patch_list");
+    if (!patchListArtifact) {
+      return {
+        valid: true,
+        patchItems: 0,
+        conflictPaths: [],
+      };
+    }
+    const patchListPath = await this.resolveArtifactFilePath(patchListArtifact);
+    if (!patchListPath) {
+      return {
+        valid: false,
+        skipped: true,
+        reason: "patch list file unavailable for local validation",
+      };
+    }
+    const patchList = await this.readArtifactJson<Record<string, unknown>>(patchListArtifact);
+    if (!patchList) {
+      throw new Error(`patch list file not found: ${patchListArtifact.storagePath}`);
+    }
+    const items = this.validatePatchListSchema(patchList);
+    const conflictPaths = this.detectPatchListConflicts(items);
+    if (conflictPaths.length > 0) {
+      throw new Error(`patch_list contains conflicting paths: ${conflictPaths.join(", ")}`);
+    }
+    return {
+      valid: true,
+      patchItems: items.length,
+      conflictPaths,
+    };
+  }
+
   private compatibilityForRelease(release: ReleaseRecord): ReleaseManifest["compatibility"] {
     return {
       minClientVersion: `${release.versionMajor}.${release.versionMinor}.0`,
@@ -1415,9 +1691,17 @@ export class LobsterReleaseRuntime {
         `[lobster-release] filtered ${skippedArtifacts} stale artifact(s) for release ${release.version} build ${build.jenkinsBuildNumber ?? "unknown"}`,
       );
     }
+    const allArtifacts = this.store.listArtifactsForBuild(buildId);
+    const patchValidation = await this.validatePatchArtifacts(release, build, allArtifacts);
     const updatedBuild: BuildRecord = {
       ...build,
       status: this.advanceBuildStatus(build.status, "uploaded"),
+      reports: patchValidation
+        ? {
+            ...build.reports,
+            patchValidation,
+          }
+        : build.reports,
       updatedAt: nowIso(),
     };
     this.store.upsertBuild(updatedBuild);

@@ -177,8 +177,8 @@
 - [ ] 实现接口级限流或最小保护
 - [ ] 实现失败事件记录
 - [ ] 实现回调失败重试策略
-- [ ] 实现 patch manifest schema 校验
-- [ ] 实现 patch 覆盖冲突检测
+- [x] 实现 patch manifest schema 校验
+- [x] 实现 patch 覆盖冲突检测
 - [ ] 实现客户端兼容性校验
 - [ ] 实现发布前 smoke gate 或最小校验门
 - [ ] 输出联调鉴权文档
@@ -247,7 +247,7 @@
 - [x] 为幂等逻辑编写测试
 - [x] 为 rollback 流程编写测试
 - [ ] 为 release graph 查询编写测试
-- [ ] 为 patch 冲突检测编写测试
+- [x] 为 patch 冲突检测编写测试
 - [ ] 为 operation lock 编写测试
 - [ ] 为 artifact 不可变规则编写测试
 - [ ] 为客户端兼容性校验编写测试
@@ -269,7 +269,7 @@
 - [x] 验证 Android AAB 真实发布路径正确
 - [x] 验证 macOS app 真实发布路径正确
 - [x] 验证 patch baseline 解析正确
-- [ ] 验证 patch 冲突检测正确
+- [x] 验证 patch 冲突检测正确
 - [ ] 验证稳定版本标记与冻结规则正确
 - [x] 验证重复回调幂等处理正确
 

@@ -22,6 +22,8 @@ This document records the current live integration status of `lobster-release`, 
 - Re-approving an already published release is idempotent and does not corrupt `previousReleaseId`.
 - Repeated Jenkins `start / publish / finish` callbacks now preserve the latest build state instead of regressing it.
 - Repeated Jenkins `publish` callbacks now deduplicate artifacts for the same build.
+- Patch publish now validates local `patch_manifest.json` schema before accepting the artifact set.
+- Patch publish now rejects conflicting `patch_list.json` entries when the uploaded patch metadata is locally accessible.
 - Jenkins callback provenance now reuses the trigger-created build instead of creating a duplicate build.
 - Jenkins callback provenance now preserves baseline information even if callback payloads contain blank baseline fields.
 - Rollback now rewrites the target release manifest after channel pointer switch.
@@ -105,6 +107,16 @@ The following live release regressions were completed successfully:
   - repeated `finish` kept `release.status = awaiting_approval` without duplicating side effects
   - repeated `start / publish` after `finish` did not regress `build.status` from `finished`
   - repeated `finish` after approval kept the release in `published` state
+- `2026-03-26 patch validation local regression`
+  - local patch publish now accepts a valid `patch_manifest.json` + `patch_list.json` pair and records `build.reports.patchValidation`
+  - local patch publish now rejects duplicated normalized paths in `patch_list.json`
+  - remote-only callback payloads without locally accessible patch metadata are marked as skipped validation instead of failing publish
+- `2026-03-26 live Jenkins patch conflict drill`
+  - real Jenkins patch-only build `GameXpert_Godot_CI #45` uploaded `1.2.19` patch artifacts under `releases/1.2.19-45-e559149/...`
+  - the uploaded real `patch_list.json` was intentionally rewritten with a conflicting duplicate normalized path before replaying the Jenkins callbacks
+  - repo-local `lobster-release` rejected the replayed `publish` callback with `patch_list contains conflicting paths: packages/hotfix_package/raw/assets/conf/bytes/conditiontable.bytes`
+  - release `1.2.19` (`rel_mn7l2ow1_b6a57696`) and build `bld_mn7l2ow2_66127338` both ended in `failed`
+  - `staging/beta` stayed on `current=1.2.18`, `previous=1.2.17`, so the failed patch publish did not move the live pointer
 
 ## Current Verified State
 
@@ -116,6 +128,9 @@ The following live release regressions were completed successfully:
   - `1.2.18`
 - Current Jenkins validation build:
   - `GameXpert_Godot_CI #44`
+- Latest conflict validation build:
+  - `GameXpert_Godot_CI #45`
+  - intentionally failed at `publish` after patch conflict injection
 - Current manifest behavior:
   - `artifacts[macos_zip] = GameXpert-macos-app-1.2.18-44-e559149.zip`
   - `patch = null`
@@ -158,6 +173,10 @@ These fixes were validated in the `GameXpert_Godot` Jenkins scripts:
   - failed deliveries back off from 1 minute and stop auto-retrying after 5 attempts.
   - manual recovery should use `release_notifications_requeue` after operator review.
   - `bot_pm` resend after manual recovery is confirmed working.
+- Patch conflict handling is now validated in a real Jenkins drill.
+  - a conflicting `patch_list.json` is rejected during `publish`
+  - the release and build move to `failed`
+  - the live beta pointer remains on the previously published release
 
 ## Recommended Notifier Responsibilities
 
@@ -197,6 +216,4 @@ These fixes were validated in the `GameXpert_Godot` Jenkins scripts:
 
 - Push both repositories so the current live-working state is preserved remotely.
 - Decide whether `GameXpert_Godot` should keep using `local-macos` or move to a more stable dedicated agent.
-- If needed, run one more regression for:
-  - patch conflict detection
 - Decide whether notifier delivery should stay reply-driven for `session_bound` mode or move to an explicit message-tool path later.
