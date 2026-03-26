@@ -42,6 +42,28 @@ function sha256Text(text: string): string {
   return crypto.createHash("sha256").update(text).digest("hex");
 }
 
+const NOTIFICATION_SENDING_TIMEOUT_MS = 5 * 60_000;
+const NOTIFICATION_RETRY_BASE_MS = 60_000;
+const NOTIFICATION_MAX_ATTEMPTS = 5;
+const TERMINAL_BUILD_STATUSES = new Set<BuildRecord["status"]>(["finished", "failed", "canceled"]);
+
+function buildStatusRank(status: BuildRecord["status"]): number {
+  switch (status) {
+    case "triggering":
+      return 0;
+    case "queued":
+      return 1;
+    case "building":
+      return 2;
+    case "uploaded":
+      return 3;
+    case "finished":
+    case "failed":
+    case "canceled":
+      return 4;
+  }
+}
+
 export class LobsterReleaseRuntime {
   private readonly manifestsDir: string;
 
@@ -526,6 +548,58 @@ export class LobsterReleaseRuntime {
     return this.store.getNotification(notificationId);
   }
 
+  private notificationRetryDelayMs(attemptCount: number): number {
+    const exponent = Math.max(0, attemptCount - 1);
+    return NOTIFICATION_RETRY_BASE_MS * 2 ** exponent;
+  }
+
+  private nextNotificationRetryAt(attemptCount: number, fromMs = Date.now()): string {
+    return new Date(fromMs + this.notificationRetryDelayMs(attemptCount)).toISOString();
+  }
+
+  private isNotificationRetryable(record: NotificationOutboxRecord, nowMs = Date.now()): boolean {
+    if (record.deadLetteredAt || record.attemptCount >= NOTIFICATION_MAX_ATTEMPTS) {
+      return false;
+    }
+    if (!record.nextAttemptAt) {
+      return true;
+    }
+    return new Date(record.nextAttemptAt).getTime() <= nowMs;
+  }
+
+  private reclaimTimedOutNotifications(
+    deliveryChannel: NotificationOutboxRecord["deliveryChannel"],
+    nowMs = Date.now(),
+  ): NotificationOutboxRecord[] {
+    const sending = this.store.listNotifications({
+      statuses: ["sending"],
+      deliveryChannel,
+    });
+    const reclaimed: NotificationOutboxRecord[] = [];
+    for (const record of sending) {
+      const claimedAtMs = record.claimedAt ? new Date(record.claimedAt).getTime() : NaN;
+      if (!Number.isFinite(claimedAtMs) || nowMs - claimedAtMs < NOTIFICATION_SENDING_TIMEOUT_MS) {
+        continue;
+      }
+      const timedOutAt = new Date(nowMs).toISOString();
+      const maxedOut = record.attemptCount >= NOTIFICATION_MAX_ATTEMPTS;
+      const next: NotificationOutboxRecord = {
+        ...record,
+        status: "failed",
+        lastError: `delivery claim timed out after ${NOTIFICATION_SENDING_TIMEOUT_MS}ms`,
+        claimedAt: undefined,
+        deadLetteredAt: maxedOut ? timedOutAt : undefined,
+        nextAttemptAt: maxedOut
+          ? undefined
+          : this.nextNotificationRetryAt(record.attemptCount, nowMs),
+        updatedAt: timedOutAt,
+      };
+      this.store.upsertNotification(next);
+      reclaimed.push(next);
+    }
+    return reclaimed;
+  }
+
   renderNotification(notificationId: string): {
     notification: NotificationOutboxRecord;
     messageText: string;
@@ -596,18 +670,31 @@ export class LobsterReleaseRuntime {
     includeFailed?: boolean;
     deliveryChannel?: NotificationOutboxRecord["deliveryChannel"];
   }): NotificationOutboxRecord[] {
-    const candidates = this.store.listNotifications({
-      statuses: params?.includeFailed ? ["pending", "failed"] : ["pending"],
-      deliveryChannel: params?.deliveryChannel ?? "feishu",
-      limit: params?.limit ?? 10,
-    });
-    const claimedAt = nowIso();
+    const deliveryChannel = params?.deliveryChannel ?? "feishu";
+    const nowMs = Date.now();
+    this.reclaimTimedOutNotifications(deliveryChannel, nowMs);
+    const candidates = this.store
+      .listNotifications({
+        statuses: params?.includeFailed ? ["pending", "failed"] : ["pending"],
+        deliveryChannel,
+      })
+      .filter((record) => {
+        if (record.status === "pending") {
+          return true;
+        }
+        return params?.includeFailed === true && this.isNotificationRetryable(record, nowMs);
+      })
+      .slice(0, params?.limit ?? 10);
+    const claimedAt = new Date(nowMs).toISOString();
     return candidates.map((record) => {
       const next: NotificationOutboxRecord = {
         ...record,
         status: "sending",
         attemptCount: record.attemptCount + 1,
         claimedAt,
+        lastAttemptAt: claimedAt,
+        nextAttemptAt: undefined,
+        deadLetteredAt: undefined,
         updatedAt: claimedAt,
       };
       this.store.upsertNotification(next);
@@ -635,6 +722,9 @@ export class LobsterReleaseRuntime {
       status: "sent",
       payload: nextPayload,
       lastError: undefined,
+      claimedAt: undefined,
+      nextAttemptAt: undefined,
+      deadLetteredAt: undefined,
       sentAt: nowIso(),
       updatedAt: nowIso(),
     };
@@ -647,11 +737,45 @@ export class LobsterReleaseRuntime {
     if (!record) {
       throw new Error(`notification not found: ${notificationId}`);
     }
+    const failedAt = Date.now();
+    const maxedOut = record.attemptCount >= NOTIFICATION_MAX_ATTEMPTS;
     const next: NotificationOutboxRecord = {
       ...record,
       status: "failed",
       lastError: error,
-      updatedAt: nowIso(),
+      claimedAt: undefined,
+      deadLetteredAt: maxedOut ? new Date(failedAt).toISOString() : undefined,
+      nextAttemptAt: maxedOut
+        ? undefined
+        : this.nextNotificationRetryAt(record.attemptCount, failedAt),
+      updatedAt: new Date(failedAt).toISOString(),
+    };
+    this.store.upsertNotification(next);
+    return next;
+  }
+
+  requeueNotification(
+    notificationId: string,
+    params?: { reason?: string },
+  ): NotificationOutboxRecord {
+    const record = this.store.getNotification(notificationId);
+    if (!record) {
+      throw new Error(`notification not found: ${notificationId}`);
+    }
+    if (record.status === "sent") {
+      throw new Error(`notification already sent: ${notificationId}`);
+    }
+    const requeuedAt = nowIso();
+    const next: NotificationOutboxRecord = {
+      ...record,
+      status: "pending",
+      lastError: undefined,
+      claimedAt: undefined,
+      nextAttemptAt: undefined,
+      deadLetteredAt: undefined,
+      requeuedAt,
+      requeueReason: params?.reason?.trim() || "manual requeue",
+      updatedAt: requeuedAt,
     };
     this.store.upsertNotification(next);
     return next;
@@ -841,6 +965,36 @@ export class LobsterReleaseRuntime {
       artifacts.find((item) => item.artifactType === "patch_bundle") ??
       null
     );
+  }
+
+  private isTerminalBuildStatus(status: BuildRecord["status"]): boolean {
+    return TERMINAL_BUILD_STATUSES.has(status);
+  }
+
+  private advanceBuildStatus(
+    current: BuildRecord["status"],
+    next: BuildRecord["status"],
+  ): BuildRecord["status"] {
+    if (this.isTerminalBuildStatus(current)) {
+      return current;
+    }
+    return buildStatusRank(next) > buildStatusRank(current) ? next : current;
+  }
+
+  private artifactIdentityKey(
+    artifact: Pick<
+      ArtifactRecord,
+      "artifactType" | "platform" | "fileName" | "sha256" | "storagePath" | "downloadUrl"
+    >,
+  ): string {
+    return [
+      artifact.artifactType,
+      artifact.platform,
+      artifact.fileName,
+      artifact.sha256,
+      artifact.storagePath,
+      artifact.downloadUrl,
+    ].join("\u001f");
   }
 
   private compatibilityForRelease(release: ReleaseRecord): ReleaseManifest["compatibility"] {
@@ -1148,7 +1302,7 @@ export class LobsterReleaseRuntime {
     }
     const next: BuildRecord = {
       ...build,
-      status: "building",
+      status: this.advanceBuildStatus(build.status, "building"),
       jenkinsJob: payload.jenkinsJob ?? build.jenkinsJob,
       jenkinsBuildNumber: payload.jenkinsBuildNumber ?? build.jenkinsBuildNumber,
       jenkinsQueueId: payload.jenkinsQueueId ?? build.jenkinsQueueId,
@@ -1205,6 +1359,11 @@ export class LobsterReleaseRuntime {
     if (!release) {
       throw new Error(`release not found: ${build.releaseId}`);
     }
+    const existingArtifactKeys = new Set(
+      this.store
+        .listArtifactsForBuild(buildId)
+        .map((artifact) => this.artifactIdentityKey(artifact)),
+    );
     const artifacts = payload.artifacts.filter((artifact) =>
       this.belongsToCurrentBuild(release, build, artifact),
     );
@@ -1212,6 +1371,20 @@ export class LobsterReleaseRuntime {
       const downloadUrl =
         artifact.downloadUrl ??
         this.buildArtifactUrl(release, artifact.platform, artifact.fileName);
+      const artifactType = (artifact.artifactType ??
+        artifact.type ??
+        "manifest") as ArtifactRecord["artifactType"];
+      const identityKey = this.artifactIdentityKey({
+        artifactType,
+        platform: artifact.platform,
+        fileName: artifact.fileName,
+        sha256: artifact.sha256,
+        storagePath: artifact.storagePath,
+        downloadUrl,
+      });
+      if (existingArtifactKeys.has(identityKey)) {
+        continue;
+      }
       const record: ArtifactRecord = {
         artifactId: createId("art"),
         buildId: build.buildId,
@@ -1220,9 +1393,7 @@ export class LobsterReleaseRuntime {
         projectKey: release.projectKey,
         environment: payload.environment ?? release.environment,
         channel: payload.channel ?? release.channel,
-        artifactType: (artifact.artifactType ??
-          artifact.type ??
-          "manifest") as ArtifactRecord["artifactType"],
+        artifactType,
         platform: artifact.platform,
         fileName: artifact.fileName,
         fileSizeBytes: artifact.fileSizeBytes ?? 0,
@@ -1236,6 +1407,7 @@ export class LobsterReleaseRuntime {
         createdAt: nowIso(),
       };
       this.store.insertArtifact(record);
+      existingArtifactKeys.add(identityKey);
     }
     const skippedArtifacts = payload.artifacts.length - artifacts.length;
     if (skippedArtifacts > 0) {
@@ -1245,7 +1417,7 @@ export class LobsterReleaseRuntime {
     }
     const updatedBuild: BuildRecord = {
       ...build,
-      status: "uploaded",
+      status: this.advanceBuildStatus(build.status, "uploaded"),
       updatedAt: nowIso(),
     };
     this.store.upsertBuild(updatedBuild);
@@ -1271,6 +1443,9 @@ export class LobsterReleaseRuntime {
     const release = this.store.getRelease(build.releaseId);
     if (!release) {
       throw new Error(`release not found: ${build.releaseId}`);
+    }
+    if (this.isTerminalBuildStatus(build.status) && build.result === payload.status) {
+      return { build, release };
     }
     const nextBuild: BuildRecord = {
       ...build,

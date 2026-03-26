@@ -75,7 +75,8 @@
             "release_notifications_pull",
             "release_notifications_render",
             "release_notifications_ack",
-            "release_notifications_fail"
+            "release_notifications_fail",
+            "release_notifications_requeue"
           ],
           "deny": []
         }
@@ -214,7 +215,8 @@
       "release_notifications_pull",
       "release_notifications_render",
       "release_notifications_ack",
-      "release_notifications_fail"
+      "release_notifications_fail",
+      "release_notifications_requeue"
     ],
     "sessions": {
       "visibility": "all"

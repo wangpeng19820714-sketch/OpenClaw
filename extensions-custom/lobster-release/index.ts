@@ -50,6 +50,7 @@ function buildNotifierSystemPrompt(config: ReturnType<typeof resolveLobsterRelea
     "Do not invent targets, rewrite the message body, or switch delivery channels unless the rendered plan explicitly tells you to.",
     "Only call release_notifications_ack after the notification message is actually sent on the delivery surface.",
     "If the required delivery primitive is unavailable or send confirmation is ambiguous, call release_notifications_fail with the concrete reason instead of acknowledging.",
+    "Do not call release_notifications_requeue unless a human operator explicitly asks for manual recovery.",
     "You may inspect release_status or release_provenance for context, but never create, approve, publish, or rollback a release.",
     "Avoid duplicate sends and keep messages concise and operational.",
   ];
@@ -242,6 +243,27 @@ function createTools(
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
           runtime.markNotificationFailed(String(params.notificationId), String(params.error)),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_notifications_requeue",
+      label: "Release Notifications Requeue",
+      description:
+        "Manually requeue a lobster release notification after operator review or delivery recovery.",
+      parameters: Type.Object(
+        {
+          notificationId: Type.String({ minLength: 1 }),
+          reason: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.requeueNotification(String(params.notificationId), {
+            reason: typeof params.reason === "string" ? params.reason : undefined,
+          }),
         );
       },
     }),
@@ -499,6 +521,7 @@ const plugin = {
         "release_notifications_pull",
         "release_notifications_ack",
         "release_notifications_fail",
+        "release_notifications_requeue",
         "release_create",
         "release_status",
         "release_graph",

@@ -192,9 +192,9 @@
 - [ ] 实现渠道 promote 工具或命令
 - [ ] 实现 rollback 工具或命令
 - [ ] 实现构建开始通知
-- [ ] 实现构建失败通知
-- [ ] 实现待审批通知
-- [ ] 实现发布成功通知
+- [x] 实现构建失败通知
+- [x] 实现待审批通知
+- [x] 实现发布成功通知
 - [ ] 实现 Agent 发布前检查入口
 - [ ] 实现 Agent 自动生成发布说明
 - [ ] 实现 Agent 辅助回滚入口
@@ -237,15 +237,15 @@
 
 ## 16. 测试
 
-- [ ] 为版本号校验编写测试
-- [ ] 为版本比较逻辑编写测试
-- [ ] 为状态机编写测试
-- [ ] 为 baseline 选择逻辑编写测试
-- [ ] 为 manifest 生成逻辑编写测试
+- [x] 为版本号校验编写测试
+- [x] 为版本比较逻辑编写测试
+- [x] 为状态机编写测试
+- [x] 为 baseline 选择逻辑编写测试
+- [x] 为 manifest 生成逻辑编写测试
 - [x] 为 Jenkins 参数映射编写测试
 - [ ] 为回调鉴权编写测试
-- [ ] 为幂等逻辑编写测试
-- [ ] 为 rollback 流程编写测试
+- [x] 为幂等逻辑编写测试
+- [x] 为 rollback 流程编写测试
 - [ ] 为 release graph 查询编写测试
 - [ ] 为 patch 冲突检测编写测试
 - [ ] 为 operation lock 编写测试
@@ -255,20 +255,23 @@
 
 ## 17. 联调与验收
 
-- [ ] 本地启动 `lobster-release` 服务
-- [ ] 本地模拟创建 release
+- [x] 本地启动 `lobster-release` 服务
+- [x] 本地模拟创建 release
 - [x] 本地模拟触发 Jenkins
 - [x] 验证 Jenkins 参数传递正确
 - [x] 验证 Jenkins 回传 `publish`
 - [x] 验证 Jenkins 回传 `finish`
-- [ ] 验证 `release_manifest.json` 生成正确
-- [ ] 验证渠道状态更新正确
-- [ ] 验证审批流正确
-- [ ] 验证 rollback 流正确
-- [ ] 验证 patch baseline 解析正确
+- [x] 验证 `release_manifest.json` 生成正确
+- [x] 验证渠道状态更新正确
+- [x] 验证审批流正确
+- [x] 验证 rollback 流正确
+- [x] 验证失败构建回调路径正确
+- [x] 验证 Android AAB 真实发布路径正确
+- [x] 验证 macOS app 真实发布路径正确
+- [x] 验证 patch baseline 解析正确
 - [ ] 验证 patch 冲突检测正确
 - [ ] 验证稳定版本标记与冻结规则正确
-- [ ] 验证重复回调幂等处理正确
+- [x] 验证重复回调幂等处理正确
 
 ## 18. 文档
 
@@ -309,12 +312,12 @@
 
 ## 19. 第一阶段建议验收标准
 
-- [ ] 能创建一个 release
+- [x] 能创建一个 release
 - [x] 能由 `lobster-release` 主动触发 Jenkins
 - [x] 能接收 Jenkins `publish / finish` 回传
-- [ ] 能生成统一 `release_manifest.json`
-- [ ] 能正确记录版本号、渠道、构建号、产物和 baseline
-- [ ] 能在 OpenClaw 中查询当前版本和构建状态
+- [x] 能生成统一 `release_manifest.json`
+- [x] 能正确记录版本号、渠道、构建号、产物和 baseline
+- [x] 能在 OpenClaw 中查询当前版本和构建状态
 
 ## 20. 下一步优先级
 

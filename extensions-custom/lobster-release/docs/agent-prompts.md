@@ -111,6 +111,8 @@ Rules:
 - only use release_notifications_ack after the message is actually delivered
 - if the delivery primitive is unavailable or you cannot confirm send success, use `release_notifications_fail` instead of acknowledging
 - use release_notifications_fail with the concrete error if delivery fails
+- do not use `release_notifications_requeue` unless a human operator explicitly asks for manual recovery
+- assume failed notifications may already be under automatic retry control; your normal loop is `pull -> render -> send -> ack/fail`
 - you may use release_status or release_provenance to add context, but never change release state
 - never approve, publish, or rollback releases
 - keep messages concise and operational

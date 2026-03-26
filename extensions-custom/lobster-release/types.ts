@@ -214,6 +214,11 @@ export type NotificationOutboxRecord = {
   attemptCount: number;
   lastError?: string;
   claimedAt?: string;
+  lastAttemptAt?: string;
+  nextAttemptAt?: string;
+  requeuedAt?: string;
+  requeueReason?: string;
+  deadLetteredAt?: string;
   sentAt?: string;
   createdAt: string;
   updatedAt: string;
