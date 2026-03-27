@@ -177,6 +177,212 @@ function createTools(
       },
     }),
     withRuntimeReady({
+      name: "release_rollout_list",
+      label: "Release Rollout List",
+      description: "List rollout records for a project/environment/channel.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          releaseId: Type.Optional(Type.String({ minLength: 1 })),
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.listRollouts({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment:
+              typeof params.environment === "string"
+                ? (params.environment as ReleaseEnvironment)
+                : undefined,
+            channel:
+              typeof params.channel === "string" ? (params.channel as ReleaseChannel) : undefined,
+            releaseId: typeof params.releaseId === "string" ? params.releaseId : undefined,
+            limit: typeof params.limit === "number" ? params.limit : undefined,
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_rollout_create",
+      label: "Release Rollout Create",
+      description:
+        "Create a channel rollout for a built release using gray-release scope and traffic controls.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          releaseId: Type.String({ minLength: 1 }),
+          trafficPercent: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+          scope: Type.Optional(
+            Type.Object(
+              {
+                region: Type.Optional(Type.String({ minLength: 1 })),
+                audience: Type.Optional(Type.String({ minLength: 1 })),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+          notes: Type.Optional(Type.String()),
+          operator: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        const scope =
+          params.scope && typeof params.scope === "object"
+            ? (params.scope as Record<string, unknown>)
+            : undefined;
+        return jsonToolResult(
+          await runtime.createRollout({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment:
+              typeof params.environment === "string"
+                ? (params.environment as ReleaseEnvironment)
+                : defaultEnvironment,
+            channel:
+              typeof params.channel === "string"
+                ? (params.channel as ReleaseChannel)
+                : defaultChannel,
+            releaseId: String(params.releaseId),
+            trafficPercent:
+              typeof params.trafficPercent === "number" ? params.trafficPercent : undefined,
+            scope: scope
+              ? {
+                  region: typeof scope.region === "string" ? scope.region : undefined,
+                  audience: typeof scope.audience === "string" ? scope.audience : undefined,
+                }
+              : undefined,
+            notes: typeof params.notes === "string" ? params.notes : undefined,
+            operator: typeof params.operator === "string" ? params.operator : "agent",
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_rollout_advance",
+      label: "Release Rollout Advance",
+      description:
+        "Advance a rollout traffic percentage, optionally complete it, and optionally publish the rollout release.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          rolloutId: Type.String({ minLength: 1 }),
+          trafficPercent: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+          complete: Type.Optional(Type.Boolean()),
+          publishRelease: Type.Optional(Type.Boolean()),
+          operator: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          await runtime.advanceRollout({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            rolloutId: String(params.rolloutId),
+            trafficPercent: typeof params.trafficPercent === "number" ? params.trafficPercent : 100,
+            complete: params.complete === true,
+            publishRelease: params.publishRelease === true,
+            operator: typeof params.operator === "string" ? params.operator : "agent",
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_rollout_cancel",
+      label: "Release Rollout Cancel",
+      description: "Cancel an active rollout without mutating the stable channel pointer.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          rolloutId: Type.String({ minLength: 1 }),
+          reason: Type.Optional(Type.String()),
+          operator: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.cancelRollout({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            rolloutId: String(params.rolloutId),
+            reason: typeof params.reason === "string" ? params.reason : undefined,
+            operator: typeof params.operator === "string" ? params.operator : "agent",
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_route_resolve",
+      label: "Release Route Resolve",
+      description:
+        "Resolve whether a request should use the stable channel pointer or an active rollout release.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          region: Type.Optional(Type.String({ minLength: 1 })),
+          audience: Type.Optional(Type.String({ minLength: 1 })),
+          bucketValue: Type.Optional(Type.Number({ minimum: 0, maximum: 99 })),
+          subjectKey: Type.Optional(Type.String({ minLength: 1 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.resolveChannelRoute({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment:
+              typeof params.environment === "string"
+                ? (params.environment as ReleaseEnvironment)
+                : undefined,
+            channel:
+              typeof params.channel === "string" ? (params.channel as ReleaseChannel) : undefined,
+            region: typeof params.region === "string" ? params.region : undefined,
+            audience: typeof params.audience === "string" ? params.audience : undefined,
+            bucketValue: typeof params.bucketValue === "number" ? params.bucketValue : undefined,
+            subjectKey: typeof params.subjectKey === "string" ? params.subjectKey : undefined,
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
       name: "release_notifications_drain",
       label: "Release Notifications Drain",
       description: "Start the dedicated lobster notifier agent to process queued notifications.",
@@ -1077,6 +1283,11 @@ const plugin = {
       names: [
         "release_project_catalog",
         "release_gray_plan",
+        "release_rollout_list",
+        "release_rollout_create",
+        "release_rollout_advance",
+        "release_rollout_cancel",
+        "release_route_resolve",
         "release_notifications_drain",
         "release_notifications_render",
         "release_notifications_pull",

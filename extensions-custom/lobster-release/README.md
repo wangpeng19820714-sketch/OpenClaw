@@ -6,6 +6,7 @@ Current state:
 
 - `docs/` stores the product and technical design notes.
 - Runtime code exists for release creation, Jenkins trigger, CI callback intake, manifest generation, approval, and rollback.
+- Runtime also includes rollout controls for gray release experiments and channel route resolution.
 - Runtime also supports release maintenance, retention cleanup, and store status inspection.
 - OpenClaw local config can load the plugin from `configs/openclaw.json`.
 

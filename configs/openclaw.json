@@ -79,6 +79,11 @@
             "release_notifications_requeue",
             "release_project_catalog",
             "release_gray_plan",
+            "release_rollout_list",
+            "release_rollout_create",
+            "release_rollout_advance",
+            "release_rollout_cancel",
+            "release_route_resolve",
             "release_store_status",
             "release_maintenance_run"
           ],
@@ -223,6 +228,11 @@
       "release_notifications_requeue",
       "release_project_catalog",
       "release_gray_plan",
+      "release_rollout_list",
+      "release_rollout_create",
+      "release_rollout_advance",
+      "release_rollout_cancel",
+      "release_route_resolve",
       "release_store_status",
       "release_maintenance_run"
     ],

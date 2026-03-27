@@ -25,8 +25,12 @@ import type {
   ReleaseManifest,
   ReleaseRecord,
   ReleaseRelationRecord,
+  RolloutRecord,
   RollbackInput,
   RollbackOperationRecord,
+  CreateRolloutInput,
+  AdvanceRolloutInput,
+  CancelRolloutInput,
   TriggerReleaseInput,
 } from "./types.js";
 import { compareVersions, inferBumpType, parseVersion, toCommitShort } from "./versioning.js";
@@ -57,6 +61,7 @@ const NOTIFICATION_SENDING_TIMEOUT_MS = 5 * 60_000;
 const NOTIFICATION_RETRY_BASE_MS = 60_000;
 const NOTIFICATION_MAX_ATTEMPTS = 5;
 const TERMINAL_BUILD_STATUSES = new Set<BuildRecord["status"]>(["finished", "failed", "canceled"]);
+const ACTIVE_ROLLOUT_STATUSES = new Set<RolloutRecord["status"]>(["draft", "active", "paused"]);
 const PATCH_CONFLICT_PATH_SEPARATOR = "/";
 const CALLBACK_NONCE_TTL_MS = 10 * 60_000;
 
@@ -334,6 +339,166 @@ export class LobsterReleaseRuntime {
       return !this.autoPublishDevForProject(projectKey);
     }
     return true;
+  }
+
+  private normalizeOptionalScopeValue(value?: string): string | undefined {
+    const normalized = typeof value === "string" ? value.trim() : "";
+    return normalized || undefined;
+  }
+
+  private activeRolloutsForChannel(
+    projectKey: string,
+    environment: ReleaseEnvironment,
+    channel: ReleaseChannel,
+  ): RolloutRecord[] {
+    return this.store
+      .listRollouts({
+        projectKey,
+        environment,
+        channel,
+        statuses: [...ACTIVE_ROLLOUT_STATUSES],
+        limit: 100,
+      })
+      .filter((rollout) => ACTIVE_ROLLOUT_STATUSES.has(rollout.status));
+  }
+
+  private assertNoConflictingRollout(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    region?: string;
+    audience?: string;
+    releaseId?: string;
+  }): void {
+    const region = this.normalizeOptionalScopeValue(params.region);
+    const audience = this.normalizeOptionalScopeValue(params.audience);
+    const conflict = this.activeRolloutsForChannel(
+      params.projectKey,
+      params.environment,
+      params.channel,
+    ).find((rollout) => {
+      if (params.releaseId && rollout.releaseId === params.releaseId) {
+        return false;
+      }
+      return (
+        this.normalizeOptionalScopeValue(rollout.scope.region) === region &&
+        this.normalizeOptionalScopeValue(rollout.scope.audience) === audience
+      );
+    });
+    if (conflict) {
+      throw new Error(
+        `rollout.scope_conflict: ${params.projectKey}/${params.environment}/${params.channel} already has active rollout ${conflict.rolloutId} for scope ${region ?? "*"}:${audience ?? "*"}`,
+      );
+    }
+  }
+
+  private assertNoBlockingRolloutForApproval(release: ReleaseRecord): void {
+    const blocking = this.activeRolloutsForChannel(
+      release.projectKey,
+      release.environment,
+      release.channel,
+    ).find((rollout) => rollout.releaseId === release.releaseId);
+    if (blocking) {
+      throw new Error(
+        `rollout.in_progress: approve-release blocked by rollout ${blocking.rolloutId}`,
+      );
+    }
+  }
+
+  private trafficPercentFromPolicy(
+    projectKey: string,
+    requestedPercent?: number,
+    complete?: boolean,
+  ): number {
+    if (complete) {
+      return 100;
+    }
+    if (typeof requestedPercent === "number" && requestedPercent > 0 && requestedPercent <= 100) {
+      return Math.trunc(requestedPercent);
+    }
+    const configured = this.getProjectPolicy(projectKey).grayRelease.rolloutPercentages[0];
+    return typeof configured === "number" && configured > 0 && configured <= 100 ? configured : 5;
+  }
+
+  private rolloutBucket(subjectKey: string): number {
+    const digest = sha256Text(subjectKey);
+    return Number.parseInt(digest.slice(0, 8), 16) % 100;
+  }
+
+  private rolloutSpecificity(rollout: RolloutRecord): number {
+    return Number(Boolean(rollout.scope.region)) + Number(Boolean(rollout.scope.audience));
+  }
+
+  private matchingRolloutsForRoute(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    region?: string;
+    audience?: string;
+  }): RolloutRecord[] {
+    const region = this.normalizeOptionalScopeValue(params.region);
+    const audience = this.normalizeOptionalScopeValue(params.audience);
+    return this.activeRolloutsForChannel(params.projectKey, params.environment, params.channel)
+      .filter((rollout) => {
+        const rolloutRegion = this.normalizeOptionalScopeValue(rollout.scope.region);
+        const rolloutAudience = this.normalizeOptionalScopeValue(rollout.scope.audience);
+        if (rolloutRegion && rolloutRegion !== region) {
+          return false;
+        }
+        if (rolloutAudience && rolloutAudience !== audience) {
+          return false;
+        }
+        return true;
+      })
+      .toSorted((left, right) => {
+        const specificityDelta = this.rolloutSpecificity(right) - this.rolloutSpecificity(left);
+        if (specificityDelta !== 0) {
+          return specificityDelta;
+        }
+        if (right.trafficPercent !== left.trafficPercent) {
+          return right.trafficPercent - left.trafficPercent;
+        }
+        return right.updatedAt.localeCompare(left.updatedAt);
+      });
+  }
+
+  private markRolloutsCanceled(
+    projectKey: string,
+    environment: ReleaseEnvironment,
+    channel: ReleaseChannel,
+    operator: string,
+    reason: string,
+  ): RolloutRecord[] {
+    const active = this.activeRolloutsForChannel(projectKey, environment, channel);
+    const now = nowIso();
+    for (const rollout of active) {
+      this.store.upsertRollout({
+        ...rollout,
+        status: "canceled",
+        canceledAt: now,
+        completedAt: rollout.completedAt ?? now,
+        updatedAt: now,
+        metadata: {
+          ...asRecord(rollout.metadata),
+          canceledBy: operator,
+          canceledReason: reason,
+        },
+      });
+      this.recordEvent({
+        projectId: rollout.projectId,
+        projectKey: rollout.projectKey,
+        environment: rollout.environment,
+        objectType: "rollout",
+        objectId: rollout.rolloutId,
+        eventType: "rollout.canceled",
+        payload: {
+          releaseId: rollout.releaseId,
+          reason,
+        },
+        createdBy: operator,
+      });
+    }
+    return active;
   }
 
   claimCallbackNonce(scope: string, nonce: string, requestHash: string): boolean {
@@ -953,6 +1118,21 @@ export class LobsterReleaseRuntime {
 
   getRollback(rollbackId: string): RollbackOperationRecord | null {
     return this.store.getRollback(rollbackId);
+  }
+
+  getRollout(rolloutId: string): RolloutRecord | null {
+    return this.store.getRollout(rolloutId);
+  }
+
+  listRollouts(params: {
+    projectKey: string;
+    environment?: ReleaseEnvironment;
+    channel?: ReleaseChannel;
+    releaseId?: string;
+    statuses?: RolloutRecord["status"][];
+    limit?: number;
+  }): RolloutRecord[] {
+    return this.store.listRollouts(params);
   }
 
   listStableReleases(params: {
@@ -3042,6 +3222,7 @@ export class LobsterReleaseRuntime {
       release.channel,
       "approve-release",
     );
+    this.assertNoBlockingRolloutForApproval(release);
     if (release.frozen) {
       throw new Error(`release is frozen: ${releaseId}`);
     }
@@ -3134,6 +3315,16 @@ export class LobsterReleaseRuntime {
     );
     if (source.status !== "published" || !source.stable) {
       throw new Error("only stable published releases can be promoted");
+    }
+    const blockingRollout = this.activeRolloutsForChannel(
+      source.projectKey,
+      source.environment,
+      source.channel,
+    ).find((rollout) => rollout.releaseId === source.releaseId);
+    if (blockingRollout) {
+      throw new Error(
+        `rollout.in_progress: promote-release blocked by rollout ${blockingRollout.rolloutId}`,
+      );
     }
     this.acquireChannelLock({
       projectKey: params.projectKey,
@@ -3385,6 +3576,13 @@ export class LobsterReleaseRuntime {
         approvedBy: approver,
       };
       this.store.upsertRollback(executing);
+      const canceledRollouts = this.markRolloutsCanceled(
+        rollback.projectKey,
+        rollback.environment,
+        rollback.channel,
+        approver,
+        `rollback:${rollbackId}`,
+      );
       const stateBefore = this.getChannelState(
         rollback.projectKey,
         rollback.environment,
@@ -3469,6 +3667,7 @@ export class LobsterReleaseRuntime {
           toReleaseId: target.releaseId,
           channelStateBefore: stateBefore ?? null,
           channelStateAfter: stateAfter ?? null,
+          canceledRolloutIds: canceledRollouts.map((item) => item.rolloutId),
         },
         createdBy: approver,
       });
@@ -3890,6 +4089,264 @@ export class LobsterReleaseRuntime {
       },
       scheduledBuilds: policy.scheduledBuilds,
       smokeWorkflows: policy.smokeWorkflows,
+    };
+  }
+
+  async createRollout(input: CreateRolloutInput): Promise<RolloutRecord> {
+    const release = this.store.getRelease(input.releaseId);
+    if (!release || release.projectKey !== input.projectKey) {
+      throw new Error(`release not found: ${input.releaseId}`);
+    }
+    const environment = this.resolveProjectEnvironment(input.projectKey, input.environment);
+    const channel = this.resolveProjectChannel(input.projectKey, input.channel);
+    if (release.environment !== environment || release.channel !== channel) {
+      throw new Error("rollout release must belong to the same project/environment/channel");
+    }
+    if (release.status !== "awaiting_approval" && release.status !== "published") {
+      throw new Error("rollout release must be built and awaiting approval or already published");
+    }
+    if (!release.currentBuildId) {
+      throw new Error("rollout release is missing current build");
+    }
+    this.assertProjectScope(input.projectKey, environment, channel, input.scope);
+    this.assertNoActiveRollback(input.projectKey, environment, channel, "create-rollout");
+    this.assertNoConflictingRollout({
+      projectKey: input.projectKey,
+      environment,
+      channel,
+      region: input.scope?.region,
+      audience: input.scope?.audience,
+      releaseId: input.releaseId,
+    });
+    const project = this.ensureProject(input.projectKey);
+    const policy = this.getProjectPolicy(input.projectKey);
+    if (!policy.grayRelease.enabled) {
+      throw new Error(`gray rollout is not enabled for project: ${input.projectKey}`);
+    }
+    const now = nowIso();
+    const rollout: RolloutRecord = {
+      rolloutId: createId("rlt"),
+      projectId: project.projectId,
+      projectKey: input.projectKey,
+      environment,
+      channel,
+      releaseId: input.releaseId,
+      status: "active",
+      trafficPercent: this.trafficPercentFromPolicy(input.projectKey, input.trafficPercent),
+      stickiness: policy.grayRelease.stickiness,
+      scope: {
+        region: this.normalizeOptionalScopeValue(input.scope?.region),
+        audience: this.normalizeOptionalScopeValue(input.scope?.audience),
+      },
+      createdBy: input.operator ?? "system",
+      notes: input.notes,
+      startedAt: now,
+      updatedAt: now,
+      createdAt: now,
+      metadata: {
+        rolloutPercentages: policy.grayRelease.rolloutPercentages,
+        smokeWorkflows: policy.smokeWorkflows,
+      },
+    };
+    this.store.upsertRollout(rollout);
+    this.recordEvent({
+      projectId: project.projectId,
+      projectKey: input.projectKey,
+      environment,
+      objectType: "rollout",
+      objectId: rollout.rolloutId,
+      eventType: "rollout.created",
+      payload: {
+        releaseId: input.releaseId,
+        trafficPercent: rollout.trafficPercent,
+        scope: rollout.scope,
+        channel,
+      },
+      createdBy: rollout.createdBy,
+    });
+    return rollout;
+  }
+
+  async advanceRollout(input: AdvanceRolloutInput): Promise<RolloutRecord> {
+    const rollout = this.store.getRollout(input.rolloutId);
+    if (!rollout || rollout.projectKey !== input.projectKey) {
+      throw new Error(`rollout not found: ${input.rolloutId}`);
+    }
+    if (rollout.status === "canceled" || rollout.status === "completed") {
+      throw new Error(`rollout is terminal: ${rollout.rolloutId}`);
+    }
+    this.assertNoActiveRollback(
+      rollout.projectKey,
+      rollout.environment,
+      rollout.channel,
+      "advance-rollout",
+    );
+    this.acquireChannelLock({
+      projectKey: rollout.projectKey,
+      environment: rollout.environment,
+      channel: rollout.channel,
+      owner: input.operator ?? "system",
+      reason: "advance-rollout",
+    });
+    const now = nowIso();
+    const trafficPercent = this.trafficPercentFromPolicy(
+      rollout.projectKey,
+      input.trafficPercent,
+      input.complete,
+    );
+    const next: RolloutRecord = {
+      ...rollout,
+      status: input.complete || trafficPercent >= 100 ? "completed" : "active",
+      trafficPercent,
+      completedAt: input.complete || trafficPercent >= 100 ? now : rollout.completedAt,
+      updatedAt: now,
+      metadata: {
+        ...asRecord(rollout.metadata),
+        lastAdvancedBy: input.operator ?? "system",
+      },
+    };
+    try {
+      this.store.upsertRollout(next);
+    } finally {
+      this.releaseChannelLock(rollout.projectKey, rollout.environment, rollout.channel);
+    }
+    const release = this.store.getRelease(rollout.releaseId);
+    if (
+      (input.publishRelease === true || next.trafficPercent >= 100) &&
+      release &&
+      release.status !== "published"
+    ) {
+      await this.approveRelease(release.releaseId, input.operator ?? "system");
+    }
+    this.recordEvent({
+      projectId: rollout.projectId,
+      projectKey: rollout.projectKey,
+      environment: rollout.environment,
+      objectType: "rollout",
+      objectId: rollout.rolloutId,
+      eventType: next.status === "completed" ? "rollout.completed" : "rollout.advanced",
+      payload: {
+        releaseId: rollout.releaseId,
+        trafficPercent: next.trafficPercent,
+        publishRelease: input.publishRelease === true,
+      },
+      createdBy: input.operator ?? "system",
+    });
+    return this.store.getRollout(rollout.rolloutId) ?? next;
+  }
+
+  cancelRollout(input: CancelRolloutInput): RolloutRecord {
+    const rollout = this.store.getRollout(input.rolloutId);
+    if (!rollout || rollout.projectKey !== input.projectKey) {
+      throw new Error(`rollout not found: ${input.rolloutId}`);
+    }
+    if (rollout.status === "canceled" || rollout.status === "completed") {
+      return rollout;
+    }
+    const now = nowIso();
+    const next: RolloutRecord = {
+      ...rollout,
+      status: "canceled",
+      canceledAt: now,
+      completedAt: rollout.completedAt ?? now,
+      updatedAt: now,
+      metadata: {
+        ...asRecord(rollout.metadata),
+        canceledBy: input.operator ?? "system",
+        canceledReason: input.reason,
+      },
+    };
+    this.store.upsertRollout(next);
+    this.recordEvent({
+      projectId: rollout.projectId,
+      projectKey: rollout.projectKey,
+      environment: rollout.environment,
+      objectType: "rollout",
+      objectId: rollout.rolloutId,
+      eventType: "rollout.canceled",
+      payload: {
+        releaseId: rollout.releaseId,
+        reason: input.reason,
+      },
+      createdBy: input.operator ?? "system",
+    });
+    return next;
+  }
+
+  resolveChannelRoute(params: {
+    projectKey: string;
+    environment?: ReleaseEnvironment;
+    channel?: ReleaseChannel;
+    region?: string;
+    audience?: string;
+    bucketValue?: number;
+    subjectKey?: string;
+  }): {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    route: "rollout" | "channel";
+    bucket: number;
+    selectedRelease: ReleaseRecord | null;
+    selectedManifestUrl?: string;
+    activeRollouts: Array<{
+      rollout: RolloutRecord;
+      release: ReleaseRecord | null;
+      matched: boolean;
+    }>;
+    fallbackRelease: ReleaseRecord | null;
+  } {
+    const environment = this.resolveProjectEnvironment(params.projectKey, params.environment);
+    const channel = this.resolveProjectChannel(params.projectKey, params.channel);
+    this.assertProjectScope(params.projectKey, environment, channel, {
+      region: params.region,
+      audience: params.audience,
+    });
+    const fallbackState = this.getChannelState(params.projectKey, environment, channel);
+    const fallbackRelease = fallbackState?.currentReleaseId
+      ? this.store.getRelease(fallbackState.currentReleaseId)
+      : null;
+    const bucket =
+      typeof params.bucketValue === "number" &&
+      Number.isFinite(params.bucketValue) &&
+      params.bucketValue >= 0 &&
+      params.bucketValue < 100
+        ? Math.trunc(params.bucketValue)
+        : this.rolloutBucket(
+            params.subjectKey ??
+              [
+                params.projectKey,
+                environment,
+                channel,
+                params.region ?? "",
+                params.audience ?? "",
+              ].join(":"),
+          );
+    const candidates = this.matchingRolloutsForRoute({
+      projectKey: params.projectKey,
+      environment,
+      channel,
+      region: params.region,
+      audience: params.audience,
+    });
+    const selectedRollout = candidates.find((rollout) => bucket < rollout.trafficPercent);
+    const selectedRelease = selectedRollout
+      ? this.store.getRelease(selectedRollout.releaseId)
+      : fallbackRelease;
+    return {
+      projectKey: params.projectKey,
+      environment,
+      channel,
+      route: selectedRollout ? "rollout" : "channel",
+      bucket,
+      selectedRelease,
+      selectedManifestUrl: selectedRelease?.manifestUrl,
+      activeRollouts: candidates.map((rollout) => ({
+        rollout,
+        release: this.store.getRelease(rollout.releaseId),
+        matched: selectedRollout?.rolloutId === rollout.rolloutId,
+      })),
+      fallbackRelease,
     };
   }
 

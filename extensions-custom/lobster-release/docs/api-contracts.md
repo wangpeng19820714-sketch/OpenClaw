@@ -5,6 +5,7 @@
 This document defines the first implementation contract for:
 
 - release creation and trigger
+- rollout routing and gray control
 - release graph
 - build provenance
 - maintenance and retention
@@ -79,6 +80,9 @@ X-Signature: sha256=<hmac>
 - `rollback.not_found`
 - `rollback.invalid_target`
 - `rollback.lock_conflict`
+- `rollout.not_found`
+- `rollout.scope_conflict`
+- `rollout.in_progress`
 - `artifact.invalid_sha256`
 - `baseline.not_found`
 
@@ -233,6 +237,93 @@ Response:
 ### 4.2 Channel Graph
 
 `GET /api/projects/:projectKey/channels/:channel/graph?environment=production&depth=10`
+
+## 4A. Rollout APIs
+
+### 4A.1 Create Rollout
+
+`POST /api/projects/:projectKey/channels/:channel/rollouts`
+
+Request:
+
+```json
+{
+  "environment": "production",
+  "releaseId": "rel_20260327_001",
+  "trafficPercent": 10,
+  "scope": {
+    "region": "cn",
+    "audience": "internal"
+  },
+  "notes": "first canary"
+}
+```
+
+Response highlights:
+
+- `rolloutId`
+- `status = active`
+- `trafficPercent`
+- `scope`
+
+### 4A.2 List Rollouts
+
+`GET /api/projects/:projectKey/channels/:channel/rollouts?environment=production`
+
+Response highlights:
+
+- rollout records ordered by latest update
+- `releaseId`
+- `status`
+- `trafficPercent`
+- `scope.region`
+- `scope.audience`
+
+### 4A.3 Advance Rollout
+
+`POST /api/projects/:projectKey/rollouts/:rolloutId/advance`
+
+Request:
+
+```json
+{
+  "trafficPercent": 50,
+  "complete": false,
+  "publishRelease": false,
+  "operator": "pengwang"
+}
+```
+
+Notes:
+
+- `trafficPercent = 100` or `complete = true` marks the rollout completed
+- `publishRelease = true` publishes the rollout release and moves the channel pointer after completion
+
+### 4A.4 Cancel Rollout
+
+`POST /api/projects/:projectKey/rollouts/:rolloutId/cancel`
+
+Request:
+
+```json
+{
+  "reason": "bad crash metrics",
+  "operator": "pengwang"
+}
+```
+
+### 4A.5 Resolve Channel Route
+
+`GET /api/projects/:projectKey/channels/:channel/route?environment=production&region=cn&audience=internal&bucket=7`
+
+Response highlights:
+
+- `route = rollout | channel`
+- `bucket`
+- `selectedRelease`
+- `selectedManifestUrl`
+- `fallbackRelease`
+- `activeRollouts[]`
 
 ## 5. Build Provenance APIs
 

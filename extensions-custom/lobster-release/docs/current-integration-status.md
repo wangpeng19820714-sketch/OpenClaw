@@ -106,6 +106,10 @@ This document records the current live integration status of `lobster-release`, 
   - release creation, CI baseline resolution, and CI callback normalization now resolve project/environment/channel through project policy instead of only using global defaults
 - Gray release planning and project catalog queries are now implemented.
   - operators can query project policy catalogs and gray rollout plans before wiring live traffic controls
+- Rollout controls and channel route resolution are now implemented locally.
+  - operators can create, list, advance, and cancel rollout records
+  - route resolution can choose between the stable channel pointer and an active rollout release using `region / audience` plus a deterministic bucket
+  - rollback now cancels active rollouts on the same channel before switching the pointer
 - API integration skeleton is now implemented and validated locally.
   - HTTP tests cover project catalog, gray plan, release creation, release graph, callback nonce replay rejection, store status, and maintenance endpoints
 - Local operator workflow now has a dedicated dev start entrypoint.
@@ -195,6 +199,11 @@ The following live release regressions were completed successfully:
   - per-project policy isolation validated with distinct environment and channel defaults
   - gray rollout plan queries now return configured percentages, region, audience, scheduled build, and smoke workflow scaffolding
   - HTTP integration tests validated `GET /projects`, `GET /projects/:projectKey/policy`, `GET /projects/:projectKey/channels/:channel/gray-plan`, release creation, release graph, callback nonce replay rejection, store status, and maintenance routes
+- `2026-03-27 rollout control local regression`
+  - rollout lifecycle validated locally with `create -> route resolve -> advance -> complete -> publish`
+  - route resolution now returns the rollout release for matching buckets and the stable channel pointer for non-matching buckets
+  - rollback approval now cancels active rollouts on the same channel before completing pointer switch
+  - HTTP integration tests validated `GET /projects/:projectKey/channels/:channel/rollouts`, `POST /projects/:projectKey/channels/:channel/rollouts`, `POST /projects/:projectKey/rollouts/:rolloutId/advance`, `POST /projects/:projectKey/rollouts/:rolloutId/cancel`, and `GET /projects/:projectKey/channels/:channel/route`
 
 ## Current Verified State
 
@@ -263,6 +272,8 @@ These fixes were validated in the `GameXpert_Godot` Jenkins scripts:
   - patch compatibility metadata is checked when the uploaded patch manifest schema exposes it
 - Promote/history/lineage/audit/note generation are now implemented and locally validated.
   - they still need a dedicated live operator drill on the real `gamexpert` project before being treated as fully live-verified
+- Rollout controls are currently locally validated only.
+  - they still need a dedicated live operator drill before being treated as production-verified traffic controls
 
 ## Recommended Notifier Responsibilities
 

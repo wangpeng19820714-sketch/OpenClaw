@@ -13,6 +13,7 @@ import type {
   ProjectRecord,
   ReleaseRecord,
   ReleaseRelationRecord,
+  RolloutRecord,
   RollbackOperationRecord,
 } from "./types.js";
 
@@ -170,6 +171,21 @@ export class LobsterReleaseStore {
         updated_at TEXT NOT NULL,
         record_json TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS rollouts (
+        rollout_id TEXT PRIMARY KEY,
+        project_key TEXT NOT NULL,
+        environment TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        release_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS rollouts_project_env_channel_idx
+        ON rollouts(project_key, environment, channel, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS rollouts_release_idx
+        ON rollouts(release_id, updated_at DESC);
 
       CREATE TABLE IF NOT EXISTS operation_locks (
         lock_key TEXT PRIMARY KEY,
@@ -630,6 +646,75 @@ export class LobsterReleaseStore {
     return rows
       .map((row) => parseJson<RollbackOperationRecord>(row.record_json))
       .filter((row): row is RollbackOperationRecord => Boolean(row));
+  }
+
+  upsertRollout(record: RolloutRecord): void {
+    this.getDb()
+      .prepare(
+        `INSERT INTO rollouts (
+            rollout_id, project_key, environment, channel, release_id, status, updated_at, record_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(rollout_id) DO UPDATE SET
+            status = excluded.status,
+            updated_at = excluded.updated_at,
+            record_json = excluded.record_json`,
+      )
+      .run(
+        record.rolloutId,
+        record.projectKey,
+        record.environment,
+        record.channel,
+        record.releaseId,
+        record.status,
+        record.updatedAt,
+        JSON.stringify(record),
+      );
+  }
+
+  getRollout(rolloutId: string): RolloutRecord | null {
+    const row = this.getDb()
+      .prepare("SELECT record_json FROM rollouts WHERE rollout_id = ?")
+      .get(rolloutId) as JsonRow | undefined;
+    return parseJson<RolloutRecord>(row?.record_json);
+  }
+
+  listRollouts(params: {
+    projectKey: string;
+    environment?: string;
+    channel?: string;
+    releaseId?: string;
+    statuses?: RolloutRecord["status"][];
+    limit?: number;
+  }): RolloutRecord[] {
+    const clauses = ["project_key = ?"];
+    const values: Array<number | string> = [params.projectKey];
+    if (params.environment) {
+      clauses.push("environment = ?");
+      values.push(params.environment);
+    }
+    if (params.channel) {
+      clauses.push("channel = ?");
+      values.push(params.channel);
+    }
+    if (params.releaseId) {
+      clauses.push("release_id = ?");
+      values.push(params.releaseId);
+    }
+    if (params.statuses?.length) {
+      clauses.push(`status IN (${params.statuses.map(() => "?").join(", ")})`);
+      values.push(...params.statuses);
+    }
+    let query = `SELECT record_json FROM rollouts WHERE ${clauses.join(" AND ")} ORDER BY updated_at DESC`;
+    if (params.limit && params.limit > 0) {
+      query += " LIMIT ?";
+      values.push(params.limit);
+    }
+    const rows = this.getDb()
+      .prepare(query)
+      .all(...values) as JsonRow[];
+    return rows
+      .map((row) => parseJson<RolloutRecord>(row.record_json))
+      .filter((row): row is RolloutRecord => Boolean(row));
   }
 
   insertEvent(record: EventLogRecord): void {

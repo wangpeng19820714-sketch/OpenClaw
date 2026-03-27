@@ -680,6 +680,50 @@ export function createLobsterReleaseHttpHandler(params: {
           );
           return true;
         }
+        match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/rollouts$/, pathname);
+        if (match) {
+          const environment = url.searchParams.get("environment") as ReleaseEnvironment | null;
+          const limitValue = Number(url.searchParams.get("limit") ?? "");
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.listRollouts({
+                projectKey: match[1],
+                environment: environment ?? undefined,
+                channel: match[2] as ReleaseChannel,
+                limit: Number.isFinite(limitValue) ? limitValue : undefined,
+              }),
+            ),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/rollouts\/([^/]+)$/, pathname);
+        if (match) {
+          sendJson(res, 200, ok(runtime.getRollout(match[2])));
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/route$/, pathname);
+        if (match) {
+          const environment = url.searchParams.get("environment") as ReleaseEnvironment | null;
+          const bucketValue = Number(url.searchParams.get("bucket") ?? "");
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.resolveChannelRoute({
+                projectKey: match[1],
+                environment: environment ?? undefined,
+                channel: match[2] as ReleaseChannel,
+                region: url.searchParams.get("region") ?? undefined,
+                audience: url.searchParams.get("audience") ?? undefined,
+                subjectKey: url.searchParams.get("subjectKey") ?? undefined,
+                bucketValue: Number.isFinite(bucketValue) ? bucketValue : undefined,
+              }),
+            ),
+          );
+          return true;
+        }
         match = matchPath(/^\/projects\/([^/]+)\/releases\/([^/]+)\/graph$/, pathname);
         if (match) {
           sendJson(res, 200, ok(runtime.getReleaseGraph(match[1], match[2])));
@@ -854,6 +898,47 @@ export function createLobsterReleaseHttpHandler(params: {
             createdBy: typeof body.createdBy === "string" ? body.createdBy : undefined,
           });
           sendJson(res, 200, ok(result));
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/rollouts$/, pathname);
+        if (match) {
+          const body = await readJsonObjectBody(req, res, {
+            maxBytes: 256 * 1024,
+            timeoutMs: 10_000,
+          });
+          if (!body) {
+            return true;
+          }
+          sendJson(
+            res,
+            200,
+            ok(
+              await runtime.createRollout({
+                projectKey: match[1],
+                environment:
+                  (body.environment as ReleaseEnvironment | undefined) ?? config.defaultEnvironment,
+                channel: match[2] as ReleaseChannel,
+                releaseId: readString(body.releaseId),
+                trafficPercent:
+                  typeof body.trafficPercent === "number" ? body.trafficPercent : undefined,
+                scope:
+                  body.scope && typeof body.scope === "object"
+                    ? {
+                        region:
+                          typeof (body.scope as Record<string, unknown>).region === "string"
+                            ? ((body.scope as Record<string, unknown>).region as string)
+                            : undefined,
+                        audience:
+                          typeof (body.scope as Record<string, unknown>).audience === "string"
+                            ? ((body.scope as Record<string, unknown>).audience as string)
+                            : undefined,
+                      }
+                    : undefined,
+                notes: typeof body.notes === "string" ? body.notes : undefined,
+                operator: typeof body.operator === "string" ? body.operator : "api",
+              }),
+            ),
+          );
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/releases\/([^/]+)\/trigger$/, pathname);
@@ -1158,6 +1243,54 @@ export function createLobsterReleaseHttpHandler(params: {
         match = matchPath(/^\/projects\/([^/]+)\/rollbacks\/([^/]+)\/cancel$/, pathname);
         if (match) {
           sendJson(res, 200, ok(runtime.cancelRollback(match[2])));
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/rollouts\/([^/]+)\/advance$/, pathname);
+        if (match) {
+          const body = await readJsonObjectBody(req, res, {
+            maxBytes: 128 * 1024,
+            timeoutMs: 10_000,
+          });
+          if (!body) {
+            return true;
+          }
+          sendJson(
+            res,
+            200,
+            ok(
+              await runtime.advanceRollout({
+                projectKey: match[1],
+                rolloutId: match[2],
+                trafficPercent: typeof body.trafficPercent === "number" ? body.trafficPercent : 100,
+                operator: typeof body.operator === "string" ? body.operator : "api",
+                complete: body.complete === true,
+                publishRelease: body.publishRelease === true,
+              }),
+            ),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/rollouts\/([^/]+)\/cancel$/, pathname);
+        if (match) {
+          const body = await readJsonObjectBody(req, res, {
+            maxBytes: 128 * 1024,
+            timeoutMs: 10_000,
+          });
+          if (!body) {
+            return true;
+          }
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.cancelRollout({
+                projectKey: match[1],
+                rolloutId: match[2],
+                operator: typeof body.operator === "string" ? body.operator : "api",
+                reason: typeof body.reason === "string" ? body.reason : undefined,
+              }),
+            ),
+          );
           return true;
         }
       }

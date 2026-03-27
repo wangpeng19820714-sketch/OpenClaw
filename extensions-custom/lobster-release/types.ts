@@ -32,6 +32,7 @@ export type RollbackStatus =
   | "completed"
   | "failed"
   | "canceled";
+export type RolloutStatus = "draft" | "active" | "paused" | "completed" | "canceled";
 export type RollbackStrategy = "pointer_switch" | "manifest_republish" | "rebuild_and_publish";
 export type ArtifactType =
   | "android_apk"
@@ -182,6 +183,30 @@ export type ChannelStateRecord = {
   previousReleaseId?: string;
   updatedAt: string;
   updatedBy?: string;
+};
+
+export type RolloutRecord = {
+  rolloutId: string;
+  projectId: string;
+  projectKey: string;
+  environment: ReleaseEnvironment;
+  channel: ReleaseChannel;
+  releaseId: string;
+  status: RolloutStatus;
+  trafficPercent: number;
+  stickiness: "account" | "device" | "channel";
+  scope: {
+    region?: string;
+    audience?: string;
+  };
+  createdBy?: string;
+  notes?: string;
+  startedAt?: string;
+  completedAt?: string;
+  canceledAt?: string;
+  updatedAt: string;
+  createdAt: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type EventLogRecord = {
@@ -382,6 +407,36 @@ export type TriggerReleaseInput = {
   releaseId: string;
   operator?: string;
   rebuild?: boolean;
+};
+
+export type CreateRolloutInput = {
+  projectKey: string;
+  environment: ReleaseEnvironment;
+  channel: ReleaseChannel;
+  releaseId: string;
+  trafficPercent?: number;
+  scope?: {
+    region?: string;
+    audience?: string;
+  };
+  notes?: string;
+  operator?: string;
+};
+
+export type AdvanceRolloutInput = {
+  projectKey: string;
+  rolloutId: string;
+  trafficPercent: number;
+  operator?: string;
+  complete?: boolean;
+  publishRelease?: boolean;
+};
+
+export type CancelRolloutInput = {
+  projectKey: string;
+  rolloutId: string;
+  operator?: string;
+  reason?: string;
 };
 
 export type RollbackInput = {

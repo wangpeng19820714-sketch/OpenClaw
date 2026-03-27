@@ -184,6 +184,155 @@ describe("lobster-release http handler", () => {
     expect(String(graphRes.body)).toContain('"edges"');
   });
 
+  it("manages rollout routes through the API", async () => {
+    const { handler, runtime } = await createHarness({
+      defaultProjectKey: "projectb",
+      projects: {
+        projectb: {
+          defaultEnvironment: "production",
+          defaultChannel: "release",
+          environments: ["production"],
+          channels: ["release"],
+          regions: ["cn"],
+          audiences: ["internal"],
+          grayRelease: {
+            enabled: true,
+            rolloutPercentages: [10, 50, 100],
+            stickiness: "account",
+          },
+        },
+      },
+    });
+
+    const stable = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "1.0.0",
+      targets: { androidApk: false, androidAab: true, macosApp: false, patch: false },
+      triggerBuild: true,
+      createdBy: "test",
+    });
+    runtime.recordBuildStart(stable.build!.buildId, {
+      jenkinsBuildNumber: 30,
+      jenkinsJob: "GameXpert_Godot_CI",
+    });
+    await runtime.recordBuildPublish(stable.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-1.0.0-30.aab",
+          fileSizeBytes: 100,
+          sha256: "stable",
+          storageProvider: "s3",
+          storagePath: "releases/1.0.0-30/ProjectB-android-aab-1.0.0-30.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(stable.build!.buildId, { status: "success" });
+    await runtime.approveRelease(stable.release.releaseId, "approver");
+
+    const candidate = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "1.0.1",
+      targets: { androidApk: false, androidAab: true, macosApp: false, patch: false },
+      triggerBuild: true,
+      createdBy: "test",
+    });
+    runtime.recordBuildStart(candidate.build!.buildId, {
+      jenkinsBuildNumber: 31,
+      jenkinsJob: "GameXpert_Godot_CI",
+    });
+    await runtime.recordBuildPublish(candidate.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-1.0.1-31.aab",
+          fileSizeBytes: 100,
+          sha256: "candidate",
+          storageProvider: "s3",
+          storagePath: "releases/1.0.1-31/ProjectB-android-aab-1.0.1-31.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(candidate.build!.buildId, { status: "success" });
+
+    const createRolloutRes = createMockServerResponse();
+    await handler(
+      createRequest({
+        method: "POST",
+        url: "/plugins/lobster-release/api/projects/projectb/channels/release/rollouts",
+        body: JSON.stringify({
+          environment: "production",
+          releaseId: candidate.release.releaseId,
+          trafficPercent: 10,
+          scope: { region: "cn", audience: "internal" },
+        }),
+        headers: { "content-type": "application/json" },
+      }),
+      createRolloutRes,
+    );
+    expect(createRolloutRes.statusCode).toBe(200);
+    const rolloutId = JSON.parse(String(createRolloutRes.body)).data.rolloutId as string;
+
+    const listRes = createMockServerResponse();
+    await handler(
+      createRequest({
+        method: "GET",
+        url: "/plugins/lobster-release/api/projects/projectb/channels/release/rollouts?environment=production",
+      }),
+      listRes,
+    );
+    expect(listRes.statusCode).toBe(200);
+    expect(String(listRes.body)).toContain(rolloutId);
+
+    const routeRes = createMockServerResponse();
+    await handler(
+      createRequest({
+        method: "GET",
+        url: "/plugins/lobster-release/api/projects/projectb/channels/release/route?environment=production&region=cn&audience=internal&bucket=5",
+      }),
+      routeRes,
+    );
+    expect(routeRes.statusCode).toBe(200);
+    expect(String(routeRes.body)).toContain('"route": "rollout"');
+
+    const advanceRes = createMockServerResponse();
+    await handler(
+      createRequest({
+        method: "POST",
+        url: `/plugins/lobster-release/api/projects/projectb/rollouts/${rolloutId}/advance`,
+        body: JSON.stringify({
+          trafficPercent: 100,
+          complete: true,
+          publishRelease: true,
+        }),
+        headers: { "content-type": "application/json" },
+      }),
+      advanceRes,
+    );
+    expect(advanceRes.statusCode).toBe(200);
+    expect(String(advanceRes.body)).toContain('"status": "completed"');
+
+    const cancelRes = createMockServerResponse();
+    await handler(
+      createRequest({
+        method: "POST",
+        url: `/plugins/lobster-release/api/projects/projectb/rollouts/${rolloutId}/cancel`,
+        body: JSON.stringify({
+          reason: "no-op after completion",
+        }),
+        headers: { "content-type": "application/json" },
+      }),
+      cancelRes,
+    );
+    expect(cancelRes.statusCode).toBe(200);
+  });
+
   it("rejects replayed signed callback nonces and supports maintenance endpoints", async () => {
     const { handler, runtime, config } = await createHarness();
     const created = await runtime.createRelease({
