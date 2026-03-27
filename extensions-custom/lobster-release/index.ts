@@ -284,6 +284,12 @@ function createTools(
             Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
           ),
           version: Type.String({ minLength: 1 }),
+          versionSource: Type.Optional(
+            Type.Unsafe<"manual" | "suggested" | "enforced">({
+              type: "string",
+              enum: ["manual", "suggested", "enforced"],
+            }),
+          ),
           git: Type.Optional(
             Type.Object(
               {
@@ -317,10 +323,90 @@ function createTools(
               : undefined,
           targets: normalizeTargets(params.targets),
           notes: typeof params.notes === "string" ? params.notes : undefined,
+          versionSource:
+            typeof params.versionSource === "string"
+              ? (params.versionSource as "manual" | "suggested" | "enforced")
+              : undefined,
           triggerBuild: params.triggerBuild === true,
           createdBy: "agent",
         });
         return jsonToolResult(result);
+      },
+    }),
+    withRuntimeReady({
+      name: "release_version_suggest",
+      label: "Release Version Suggest",
+      description: "Suggest the next version for a channel based on bump type.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          bumpType: Type.Unsafe<"patch" | "minor" | "major">({
+            type: "string",
+            enum: ["patch", "minor", "major"],
+          }),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.suggestVersion({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment: (typeof params.environment === "string"
+              ? params.environment
+              : "staging") as ReleaseEnvironment,
+            channel: (typeof params.channel === "string"
+              ? params.channel
+              : "beta") as ReleaseChannel,
+            bumpType: params.bumpType as "patch" | "minor" | "major",
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_build_status",
+      label: "Release Build Status",
+      description: "Inspect a build with its artifacts and provenance.",
+      parameters: Type.Object(
+        {
+          buildId: Type.String({ minLength: 1 }),
+          refreshJenkins: Type.Optional(Type.Boolean()),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        const buildId = String(params.buildId);
+        return jsonToolResult({
+          ...runtime.getBuildStatus(buildId),
+          jenkinsStatus:
+            params.refreshJenkins === true ? await runtime.pollJenkinsBuildStatus(buildId) : null,
+        });
+      },
+    }),
+    withRuntimeReady({
+      name: "release_preflight",
+      label: "Release Preflight",
+      description: "Run a publish-readiness check for a release and its current build.",
+      parameters: Type.Object(
+        {
+          releaseId: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(runtime.runReleasePreflight(String(params.releaseId)));
       },
     }),
     withRuntimeReady({
@@ -356,6 +442,58 @@ function createTools(
           (typeof params.channel === "string" ? params.channel : "beta") as ReleaseChannel,
         );
         return jsonToolResult(state);
+      },
+    }),
+    withRuntimeReady({
+      name: "release_generate_notes",
+      label: "Release Generate Notes",
+      description: "Generate archived or live release notes for a release.",
+      parameters: Type.Object(
+        {
+          releaseId: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(runtime.generateReleaseNotes(String(params.releaseId)));
+      },
+    }),
+    withRuntimeReady({
+      name: "release_stable_list",
+      label: "Release Stable List",
+      description: "List stable releases for a channel.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.listStableReleases({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment: (typeof params.environment === "string"
+              ? params.environment
+              : "staging") as ReleaseEnvironment,
+            channel: (typeof params.channel === "string"
+              ? params.channel
+              : "beta") as ReleaseChannel,
+            limit: typeof params.limit === "number" ? params.limit : undefined,
+          }),
+        );
       },
     }),
     withRuntimeReady({
@@ -400,6 +538,43 @@ function createTools(
       },
     }),
     withRuntimeReady({
+      name: "release_channel_history",
+      label: "Release Channel History",
+      description: "Inspect release history and relation edges for a channel.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.getChannelHistory({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment: (typeof params.environment === "string"
+              ? params.environment
+              : "staging") as ReleaseEnvironment,
+            channel: (typeof params.channel === "string"
+              ? params.channel
+              : "beta") as ReleaseChannel,
+            limit: typeof params.limit === "number" ? params.limit : undefined,
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
       name: "release_provenance",
       label: "Release Provenance",
       description: "Inspect build provenance by build or release.",
@@ -430,6 +605,89 @@ function createTools(
       },
     }),
     withRuntimeReady({
+      name: "release_baselines",
+      label: "Release Baselines",
+      description: "List resolved baselines for a channel and platform.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          platform: Type.Optional(Type.String({ minLength: 1 })),
+          targetVersion: Type.Optional(Type.String({ minLength: 1 })),
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.listBaselines({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment: (typeof params.environment === "string"
+              ? params.environment
+              : "staging") as ReleaseEnvironment,
+            channel: (typeof params.channel === "string"
+              ? params.channel
+              : "beta") as ReleaseChannel,
+            platform: typeof params.platform === "string" ? params.platform : "patch",
+            targetVersion:
+              typeof params.targetVersion === "string" ? params.targetVersion : undefined,
+            limit: typeof params.limit === "number" ? params.limit : undefined,
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_baseline_lineage",
+      label: "Release Baseline Lineage",
+      description: "Trace baseline inheritance for a version or release.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          platform: Type.Optional(Type.String({ minLength: 1 })),
+          releaseId: Type.Optional(Type.String({ minLength: 1 })),
+          version: Type.Optional(Type.String({ minLength: 1 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.getBaselineLineage({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment: (typeof params.environment === "string"
+              ? params.environment
+              : "staging") as ReleaseEnvironment,
+            channel: (typeof params.channel === "string"
+              ? params.channel
+              : "beta") as ReleaseChannel,
+            platform: typeof params.platform === "string" ? params.platform : "patch",
+            releaseId: typeof params.releaseId === "string" ? params.releaseId : undefined,
+            version: typeof params.version === "string" ? params.version : undefined,
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
       name: "release_approve",
       label: "Release Approve",
       description: "Approve a built release for publish.",
@@ -447,6 +705,159 @@ function createTools(
             String(params.releaseId),
             typeof params.operator === "string" ? params.operator : "agent",
           ),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_promote",
+      label: "Release Promote",
+      description:
+        "Promote a stable release into another environment/channel and publish it there.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          sourceReleaseId: Type.String({ minLength: 1 }),
+          targetEnvironment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          targetChannel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          notes: Type.Optional(Type.String()),
+          operator: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          await runtime.promoteRelease({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            sourceReleaseId: String(params.sourceReleaseId),
+            targetEnvironment: (typeof params.targetEnvironment === "string"
+              ? params.targetEnvironment
+              : "staging") as ReleaseEnvironment,
+            targetChannel: (typeof params.targetChannel === "string"
+              ? params.targetChannel
+              : "release") as ReleaseChannel,
+            notes: typeof params.notes === "string" ? params.notes : undefined,
+            operator: typeof params.operator === "string" ? params.operator : "agent",
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_promote_history",
+      label: "Release Promote History",
+      description: "Inspect promote relations for a release or channel.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          releaseId: Type.Optional(Type.String({ minLength: 1 })),
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.getPromotionHistory({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment:
+              typeof params.environment === "string"
+                ? (params.environment as ReleaseEnvironment)
+                : undefined,
+            channel:
+              typeof params.channel === "string" ? (params.channel as ReleaseChannel) : undefined,
+            releaseId: typeof params.releaseId === "string" ? params.releaseId : undefined,
+            limit: typeof params.limit === "number" ? params.limit : undefined,
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_rollback_audit",
+      label: "Release Rollback Audit",
+      description: "Inspect recorded rollback audit details for a project/environment/channel.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.getRollbackAudit({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment:
+              typeof params.environment === "string"
+                ? (params.environment as ReleaseEnvironment)
+                : undefined,
+            channel:
+              typeof params.channel === "string" ? (params.channel as ReleaseChannel) : undefined,
+            limit: typeof params.limit === "number" ? params.limit : undefined,
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_rollback_assist",
+      label: "Release Rollback Assist",
+      description: "Preview rollback candidates, compatibility, and the recommended target.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.getRollbackPlan({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment: (typeof params.environment === "string"
+              ? params.environment
+              : "staging") as ReleaseEnvironment,
+            channel: (typeof params.channel === "string"
+              ? params.channel
+              : "beta") as ReleaseChannel,
+          }),
         );
       },
     }),
@@ -475,6 +886,7 @@ function createTools(
             }),
           ),
           freezeCurrentRelease: Type.Optional(Type.Boolean()),
+          autoApprove: Type.Optional(Type.Boolean()),
           operator: Type.Optional(Type.String()),
         },
         { additionalProperties: false },
@@ -496,7 +908,14 @@ function createTools(
           freezeCurrentRelease: params.freezeCurrentRelease !== false,
           operator: typeof params.operator === "string" ? params.operator : "agent",
         });
-        return jsonToolResult(rollback);
+        if (params.autoApprove === false) {
+          return jsonToolResult({ requested: rollback, completed: null });
+        }
+        const completed = await runtime.approveRollback(
+          rollback.rollbackId,
+          typeof params.operator === "string" ? params.operator : "agent",
+        );
+        return jsonToolResult({ requested: rollback, completed });
       },
     }),
   ];
@@ -522,11 +941,23 @@ const plugin = {
         "release_notifications_ack",
         "release_notifications_fail",
         "release_notifications_requeue",
+        "release_build_status",
+        "release_preflight",
         "release_create",
+        "release_version_suggest",
         "release_status",
+        "release_generate_notes",
+        "release_stable_list",
         "release_graph",
+        "release_channel_history",
         "release_provenance",
+        "release_baselines",
+        "release_baseline_lineage",
         "release_approve",
+        "release_promote",
+        "release_promote_history",
+        "release_rollback_audit",
+        "release_rollback_assist",
         "release_rollback",
       ],
     });

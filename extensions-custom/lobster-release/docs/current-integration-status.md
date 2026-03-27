@@ -1,6 +1,6 @@
 # Lobster Release Current Integration Status
 
-Last updated: 2026-03-26
+Last updated: 2026-03-27
 
 ## Scope
 
@@ -19,11 +19,22 @@ This document records the current live integration status of `lobster-release`, 
 - Published manifests expose stable release data, rollback target, provenance, baseline, and patch bundle URLs.
 - `patch.bundleUrl` now points to the patch zip instead of a random patch content file.
 - Baseline resolution now advances to the latest stable release in the same channel.
+- Version governance is now enforced in runtime.
+  - release versions must stay in strict `major.minor.patch`
+  - duplicate versions in the same `project/environment/channel` are rejected
+  - next-version suggestions are available by `patch / minor / major`
 - Re-approving an already published release is idempotent and does not corrupt `previousReleaseId`.
 - Repeated Jenkins `start / publish / finish` callbacks now preserve the latest build state instead of regressing it.
 - Repeated Jenkins `publish` callbacks now deduplicate artifacts for the same build.
 - Patch publish now validates local `patch_manifest.json` schema before accepting the artifact set.
 - Patch publish now rejects conflicting `patch_list.json` entries when the uploaded patch metadata is locally accessible.
+- Callback ingress now enforces signed timestamp freshness, nonce replay protection, and idempotency receipts.
+- Callback ingress now has minimal anti-abuse protection.
+  - callback routes are rate limited per route and remote address
+  - failed callback execution now records `callback.failed` audit events
+  - retryable callback failures now return a `Retry-After` hint to upstream callers
+- Publish now runs a smoke gate that blocks missing required artifacts before a build can advance to `uploaded`.
+- Patch publish now checks patch compatibility metadata when it is present in the uploaded manifest schema.
 - Jenkins callback provenance now reuses the trigger-created build instead of creating a duplicate build.
 - Jenkins callback provenance now preserves baseline information even if callback payloads contain blank baseline fields.
 - Rollback now rewrites the target release manifest after channel pointer switch.
@@ -38,6 +49,30 @@ This document records the current live integration status of `lobster-release`, 
   - `release_notifications_ack`
   - `release_notifications_fail`
   - `release_notifications_requeue`
+- `lobster-release` now exposes operational query tools:
+  - `release_build_status`
+  - `release_preflight`
+  - `release_generate_notes`
+  - `release_version_suggest`
+  - `release_stable_list`
+  - `release_channel_history`
+  - `release_baselines`
+  - `release_baseline_lineage`
+  - `release_promote`
+  - `release_promote_history`
+  - `release_rollback_audit`
+  - `release_rollback_assist`
+  - `release_build_status` can also poll Jenkins live queue/build state when requested
+- Release promotion is now implemented as a first-class runtime flow.
+  - a stable published release can be promoted into another channel/environment
+  - promotion generates a fresh target-channel manifest while reusing the validated source build
+  - promotion writes `promoted_from` relation edges and appears in promote history queries
+- Release changelog archiving is now implemented.
+  - approval, auto-dev publish, and promotion archive release notes into `release.changelog.archived` events
+  - agent callers can fetch archived or live notes through `release_generate_notes`
+- Rollback audit capture is now persisted on the rollback record.
+  - completed rollback records now keep `channelStateBefore`, `channelStateAfter`, and source/target status snapshots
+- Build start notifications are now emitted when a build first enters `building`.
 - Notification delivery now has runtime recovery rules:
   - timed-out `sending` claims are reclaimed automatically
   - `failed` notifications retry with backoff before becoming manual-only
@@ -117,6 +152,15 @@ The following live release regressions were completed successfully:
   - repo-local `lobster-release` rejected the replayed `publish` callback with `patch_list contains conflicting paths: packages/hotfix_package/raw/assets/conf/bytes/conditiontable.bytes`
   - release `1.2.19` (`rel_mn7l2ow1_b6a57696`) and build `bld_mn7l2ow2_66127338` both ended in `failed`
   - `staging/beta` stayed on `current=1.2.18`, `previous=1.2.17`, so the failed patch publish did not move the live pointer
+- `2026-03-26 callback security and smoke gate local regression`
+  - duplicate callback nonces are now rejected after the first successful claim
+  - successful callback responses are now cached by idempotency key and request hash
+  - patch publish with only `patch_manifest` and no `patch_bundle` is now blocked by `publish smoke gate failed: required artifact missing: patch_bundle`
+- `2026-03-27 promote and audit local regression`
+  - local runtime flow validated `release_preflight`, `release_generate_notes`, `release_promote`, `release_promote_history`, `release_baseline_lineage`, and `release_rollback_audit`
+  - promote created fresh release-channel records while reusing source build artifacts and manifests
+  - baseline lineage for `1.0.3` resolved as `1.0.2 -> 1.0.3`, `1.0.1 -> 1.0.2`, and `1.0.0 -> 1.0.1`
+  - rollback audit entries now contain `manifestAction.audit` snapshots after completion
 
 ## Current Verified State
 
@@ -177,12 +221,22 @@ These fixes were validated in the `GameXpert_Godot` Jenkins scripts:
   - a conflicting `patch_list.json` is rejected during `publish`
   - the release and build move to `failed`
   - the live beta pointer remains on the previously published release
+- Callback hardening is now in place for both CI and signed build callbacks.
+  - duplicate request bodies can be served from idempotency receipts
+  - replayed nonces are rejected before callback logic is re-executed
+- Publish smoke gate is now active.
+  - required artifacts must exist before a build can move to `uploaded`
+  - patch compatibility metadata is checked when the uploaded patch manifest schema exposes it
+- Promote/history/lineage/audit/note generation are now implemented and locally validated.
+  - they still need a dedicated live operator drill on the real `gamexpert` project before being treated as fully live-verified
 
 ## Recommended Notifier Responsibilities
 
 - `main`
   - owns operator-facing release actions and manual notifier recovery
   - may call `release_notifications_drain` and can keep `pull/render/ack/fail/requeue` for debugging and backfill
+  - may use `release_rollback` as a true one-click rollback path, because the tool now auto-approves by default
+  - may use `release_build_status`, `release_stable_list`, `release_channel_history`, and `release_baselines` for release operations triage
 - `pm`
   - is the dedicated notifier worker
   - should have `message`, `release_notifications_pull`, `release_notifications_render`, `release_notifications_ack`, and `release_notifications_fail`

@@ -30,6 +30,25 @@ function parseJson<T>(value: string | undefined): T | null {
 }
 
 type JsonRow = { record_json?: string };
+type CallbackNonceRecord = {
+  nonceKey: string;
+  scope: string;
+  nonce: string;
+  requestHash: string;
+  createdAt: string;
+  expiresAt: string;
+};
+
+type IdempotencyReceiptRecord = {
+  receiptKey: string;
+  scope: string;
+  idempotencyKey: string;
+  requestHash: string;
+  statusCode: number;
+  responseBody: unknown;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export class LobsterReleaseStore {
   private readonly dbPath: string;
@@ -155,6 +174,21 @@ export class LobsterReleaseStore {
         object_id TEXT NOT NULL,
         event_type TEXT NOT NULL,
         created_at TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS callback_nonces (
+        nonce_key TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS idempotency_receipts (
+        receipt_key TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
         record_json TEXT NOT NULL
       );
 
@@ -429,6 +463,25 @@ export class LobsterReleaseStore {
       .filter((row): row is ReleaseRelationRecord => Boolean(row));
   }
 
+  listReleaseRelationsByType(
+    projectKey: string,
+    relationType: ReleaseRelationRecord["relationType"],
+    limit?: number,
+  ): ReleaseRelationRecord[] {
+    const values: Array<number | string> = [projectKey, relationType];
+    let query = `SELECT record_json FROM release_relations WHERE project_key = ? AND relation_type = ? ORDER BY created_at DESC`;
+    if (limit && limit > 0) {
+      query += " LIMIT ?";
+      values.push(limit);
+    }
+    const rows = this.getDb()
+      .prepare(query)
+      .all(...values) as JsonRow[];
+    return rows
+      .map((row) => parseJson<ReleaseRelationRecord>(row.record_json))
+      .filter((row): row is ReleaseRelationRecord => Boolean(row));
+  }
+
   upsertBuildProvenance(record: BuildProvenanceRecord): void {
     this.getDb()
       .prepare(
@@ -497,6 +550,35 @@ export class LobsterReleaseStore {
     return parseJson<RollbackOperationRecord>(row?.record_json);
   }
 
+  listRollbacks(params: {
+    projectKey: string;
+    environment?: string;
+    channel?: string;
+    limit?: number;
+  }): RollbackOperationRecord[] {
+    const clauses = ["project_key = ?"];
+    const values: Array<number | string> = [params.projectKey];
+    if (params.environment) {
+      clauses.push("environment = ?");
+      values.push(params.environment);
+    }
+    if (params.channel) {
+      clauses.push("channel = ?");
+      values.push(params.channel);
+    }
+    let query = `SELECT record_json FROM rollback_operations WHERE ${clauses.join(" AND ")} ORDER BY updated_at DESC`;
+    if (params.limit && params.limit > 0) {
+      query += " LIMIT ?";
+      values.push(params.limit);
+    }
+    const rows = this.getDb()
+      .prepare(query)
+      .all(...values) as JsonRow[];
+    return rows
+      .map((row) => parseJson<RollbackOperationRecord>(row.record_json))
+      .filter((row): row is RollbackOperationRecord => Boolean(row));
+  }
+
   insertEvent(record: EventLogRecord): void {
     this.getDb()
       .prepare(
@@ -513,6 +595,85 @@ export class LobsterReleaseStore {
         record.createdAt,
         JSON.stringify(record),
       );
+  }
+
+  listEvents(params: {
+    projectKey: string;
+    objectType?: string;
+    objectId?: string;
+    eventType?: string;
+    eventTypePrefix?: string;
+    limit?: number;
+  }): EventLogRecord[] {
+    const clauses = ["project_key = ?"];
+    const values: Array<number | string> = [params.projectKey];
+    if (params.objectType) {
+      clauses.push("object_type = ?");
+      values.push(params.objectType);
+    }
+    if (params.objectId) {
+      clauses.push("object_id = ?");
+      values.push(params.objectId);
+    }
+    if (params.eventType) {
+      clauses.push("event_type = ?");
+      values.push(params.eventType);
+    } else if (params.eventTypePrefix) {
+      clauses.push("event_type LIKE ?");
+      values.push(`${params.eventTypePrefix}%`);
+    }
+    let query = `SELECT record_json FROM event_logs WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC`;
+    if (params.limit && params.limit > 0) {
+      query += " LIMIT ?";
+      values.push(params.limit);
+    }
+    const rows = this.getDb()
+      .prepare(query)
+      .all(...values) as JsonRow[];
+    return rows
+      .map((row) => parseJson<EventLogRecord>(row.record_json))
+      .filter((row): row is EventLogRecord => Boolean(row));
+  }
+
+  getIdempotencyReceipt(scope: string, idempotencyKey: string): IdempotencyReceiptRecord | null {
+    const row = this.getDb()
+      .prepare("SELECT record_json FROM idempotency_receipts WHERE receipt_key = ?")
+      .get(`${scope}:${idempotencyKey}`) as JsonRow | undefined;
+    return parseJson<IdempotencyReceiptRecord>(row?.record_json);
+  }
+
+  upsertIdempotencyReceipt(record: IdempotencyReceiptRecord): void {
+    this.getDb()
+      .prepare(
+        `INSERT INTO idempotency_receipts (
+            receipt_key, scope, created_at, updated_at, record_json
+          ) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(receipt_key) DO UPDATE SET
+            updated_at = excluded.updated_at,
+            record_json = excluded.record_json`,
+      )
+      .run(
+        record.receiptKey,
+        record.scope,
+        record.createdAt,
+        record.updatedAt,
+        JSON.stringify(record),
+      );
+  }
+
+  purgeExpiredCallbackNonces(now = nowIso()): void {
+    this.getDb().prepare("DELETE FROM callback_nonces WHERE expires_at <= ?").run(now);
+  }
+
+  claimCallbackNonce(record: CallbackNonceRecord): boolean {
+    const result = this.getDb()
+      .prepare(
+        `INSERT OR IGNORE INTO callback_nonces (
+            nonce_key, scope, expires_at, record_json
+          ) VALUES (?, ?, ?, ?)`,
+      )
+      .run(record.nonceKey, record.scope, record.expiresAt, JSON.stringify(record));
+    return Number(result.changes ?? 0) > 0;
   }
 
   insertNotification(record: NotificationOutboxRecord): void {

@@ -360,6 +360,7 @@ export type CreateReleaseInput = {
   environment: ReleaseEnvironment;
   channel: ReleaseChannel;
   version: string;
+  versionSource?: ReleaseVersionSource;
   git?: {
     url?: string;
     branch?: string;

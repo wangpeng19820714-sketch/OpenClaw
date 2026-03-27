@@ -19,18 +19,29 @@ import type {
   ReleaseEnvironment,
 } from "./types.js";
 
+const CALLBACK_RATE_LIMIT_WINDOW_MS = 60_000;
+const CALLBACK_RATE_LIMIT_MAX_REQUESTS = 60;
+const CALLBACK_RETRY_AFTER_SECONDS = 30;
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(`${JSON.stringify(body, null, 2)}\n`);
 }
 
-function sendError(res: ServerResponse, status: number, code: string, message: string): void {
+function sendError(
+  res: ServerResponse,
+  status: number,
+  code: string,
+  message: string,
+  extras?: Record<string, unknown>,
+): void {
   sendJson(res, status, {
     ok: false,
     error: {
       code,
       message,
+      ...extras,
     },
   });
 }
@@ -87,20 +98,25 @@ async function sendFile(res: ServerResponse, filePath: string): Promise<void> {
   }
 }
 
-function sendCi(res: ServerResponse, data: unknown): void {
-  sendJson(res, 200, {
-    code: 0,
-    message: "ok",
-    data,
-  });
-}
-
-function sendCiError(res: ServerResponse, status: number, message: string): void {
+function sendCiError(
+  res: ServerResponse,
+  status: number,
+  message: string,
+  extras?: Record<string, unknown>,
+): void {
   sendJson(res, status, {
     code: status,
     message,
-    data: null,
+    data: extras ?? null,
   });
+}
+
+function ciEnvelope(data: unknown) {
+  return {
+    code: 0,
+    message: "ok",
+    data,
+  };
 }
 
 function ok(data: unknown) {
@@ -110,8 +126,16 @@ function ok(data: unknown) {
   };
 }
 
+function sha256Hex(value: string): string {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
 function readString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function readHeaderString(value: string | string[] | undefined): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function getUrl(req: IncomingMessage): URL {
@@ -137,6 +161,47 @@ function timingSafeEqualHex(left: string, right: string): boolean {
     return false;
   }
   return crypto.timingSafeEqual(a, b);
+}
+
+function parseJsonObject(rawBody: string): Record<string, unknown> {
+  const value = JSON.parse(rawBody) as unknown;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("request body must be a JSON object");
+  }
+  return value as Record<string, unknown>;
+}
+
+function resolveCiIdempotencyKey(
+  pathname: string,
+  headers: IncomingMessage["headers"],
+  body: Record<string, unknown>,
+): string | undefined {
+  return (
+    readHeaderString(headers["x-lobster-idempotency-key"]) ??
+    readString(body.requestId) ??
+    (() => {
+      const jobName = readString(body.jobName);
+      const buildNumber = readString(body.buildNumber);
+      return jobName && buildNumber ? `${pathname}:${jobName}:${buildNumber}` : undefined;
+    })()
+  );
+}
+
+function resolveSignedCallbackIdempotencyKey(
+  pathname: string,
+  headers: IncomingMessage["headers"],
+  body: Record<string, unknown>,
+  requestHash: string,
+): string {
+  return (
+    readHeaderString(headers["x-idempotency-key"]) ??
+    readString(body.idempotencyKey) ??
+    `${pathname}:${requestHash}`
+  );
+}
+
+function isSignedBuildCallbackPath(pathname: string): boolean {
+  return /^\/projects\/[^/]+\/builds\/[^/]+\/(start|publish|finish)$/.test(pathname);
 }
 
 function normalizeBuildTargets(raw: unknown): BuildTargets {
@@ -247,6 +312,21 @@ export function createLobsterReleaseHttpHandler(params: {
   const { runtime, config, logger } = params;
   const pluginPrefix = config.routePrefix;
   const ciPrefix = config.ciRoutePrefix;
+  const callbackRateLimits = new Map<string, number[]>();
+
+  const claimCallbackRateLimit = (key: string, nowMs = Date.now()): boolean => {
+    const existing = callbackRateLimits.get(key) ?? [];
+    const recent = existing.filter(
+      (timestamp) => nowMs - timestamp < CALLBACK_RATE_LIMIT_WINDOW_MS,
+    );
+    if (recent.length >= CALLBACK_RATE_LIMIT_MAX_REQUESTS) {
+      callbackRateLimits.set(key, recent);
+      return false;
+    }
+    recent.push(nowMs);
+    callbackRateLimits.set(key, recent);
+    return true;
+  };
 
   return async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     const url = getUrl(req);
@@ -254,11 +334,23 @@ export function createLobsterReleaseHttpHandler(params: {
     const isCiRoute = originalPath.startsWith(ciPrefix);
     const prefix = isCiRoute ? ciPrefix : pluginPrefix;
     const pathname = parseRoutePath(originalPath, prefix);
+    const isSignedBuildCallback = !isCiRoute && isSignedBuildCallbackPath(pathname);
+    const callbackProjectKey =
+      /^\/projects\/([^/]+)/.exec(pathname)?.[1] ?? config.defaultProjectKey;
+    const remoteAddress = req.socket.remoteAddress ?? "unknown";
 
     try {
       if (isCiRoute) {
         if (req.method !== "POST") {
           sendCiError(res, 405, "method not allowed");
+          return true;
+        }
+        if (!claimCallbackRateLimit(`ci:${pathname}:${remoteAddress}`)) {
+          res.setHeader("Retry-After", String(CALLBACK_RETRY_AFTER_SECONDS));
+          sendCiError(res, 429, "callback rate limit exceeded", {
+            retryable: true,
+            retryAfterSeconds: CALLBACK_RETRY_AFTER_SECONDS,
+          });
           return true;
         }
         const rawBody = await readRequestBodyWithLimit(req, {
@@ -270,25 +362,68 @@ export function createLobsterReleaseHttpHandler(params: {
           sendCiError(res, 403, verification.message);
           return true;
         }
-        const body = JSON.parse(rawBody) as Record<string, unknown>;
+        let body: Record<string, unknown>;
+        try {
+          body = parseJsonObject(rawBody);
+        } catch (error) {
+          sendCiError(res, 400, error instanceof Error ? error.message : "invalid JSON body");
+          return true;
+        }
+        const requestHash = sha256Hex(rawBody);
+        const idempotencyKey = resolveCiIdempotencyKey(pathname, req.headers, body);
+        if (!idempotencyKey) {
+          sendCiError(res, 400, "missing idempotency key");
+          return true;
+        }
+        const receiptScope = `ci:${pathname}`;
+        const existingReceipt = runtime.getIdempotencyReceipt(receiptScope, idempotencyKey);
+        if (existingReceipt) {
+          if (existingReceipt.requestHash !== requestHash) {
+            sendCiError(res, 409, "idempotency key reused with different request body");
+            return true;
+          }
+          sendJson(res, existingReceipt.statusCode, existingReceipt.responseBody);
+          return true;
+        }
+        const nonce = readHeaderString(req.headers["x-lobster-nonce"]);
+        if (!nonce || !runtime.claimCallbackNonce(receiptScope, nonce, requestHash)) {
+          sendCiError(res, 409, "replayed nonce");
+          return true;
+        }
 
         if (pathname === "/builds/resolve-baseline") {
-          sendCi(res, runtime.resolveCiBaseline(body as CiBuildRequest));
+          const responseBody = ciEnvelope(runtime.resolveCiBaseline(body as CiBuildRequest));
+          runtime.recordIdempotencyReceipt(
+            receiptScope,
+            idempotencyKey,
+            requestHash,
+            200,
+            responseBody,
+          );
+          sendJson(res, 200, responseBody);
           return true;
         }
         if (pathname === "/builds/start") {
           const build = runtime.recordCiBuildStart(body as CiBuildRequest);
-          sendCi(res, {
+          const responseBody = ciEnvelope({
             accepted: true,
             traceId: build.buildId,
             buildId: build.buildId,
             releaseId: build.releaseId,
           });
+          runtime.recordIdempotencyReceipt(
+            receiptScope,
+            idempotencyKey,
+            requestHash,
+            200,
+            responseBody,
+          );
+          sendJson(res, 200, responseBody);
           return true;
         }
         if (pathname === "/builds/publish") {
           const result = await runtime.recordCiBuildPublish(body as CiPublishRequest);
-          sendCi(res, {
+          const responseBody = ciEnvelope({
             accepted: true,
             traceId: result.build.buildId,
             buildId: result.build.buildId,
@@ -298,17 +433,33 @@ export function createLobsterReleaseHttpHandler(params: {
               result.manifest.artifacts.find((item) => item.type === "manifest")?.downloadUrl ??
               null,
           });
+          runtime.recordIdempotencyReceipt(
+            receiptScope,
+            idempotencyKey,
+            requestHash,
+            200,
+            responseBody,
+          );
+          sendJson(res, 200, responseBody);
           return true;
         }
         if (pathname === "/builds/finish") {
           const result = await runtime.recordCiBuildFinish(body as CiFinishRequest);
-          sendCi(res, {
+          const responseBody = ciEnvelope({
             accepted: true,
             traceId: result.build.buildId,
             buildId: result.build.buildId,
             releaseId: result.release.releaseId,
             releaseStatus: result.release.status,
           });
+          runtime.recordIdempotencyReceipt(
+            receiptScope,
+            idempotencyKey,
+            requestHash,
+            200,
+            responseBody,
+          );
+          sendJson(res, 200, responseBody);
           return true;
         }
         return false;
@@ -353,6 +504,55 @@ export function createLobsterReleaseHttpHandler(params: {
           sendJson(res, 200, ok(release));
           return true;
         }
+        match = matchPath(/^\/projects\/([^/]+)\/versions\/suggest$/, pathname);
+        if (match) {
+          const environment =
+            (url.searchParams.get("environment") as ReleaseEnvironment | null) ??
+            config.defaultEnvironment;
+          const channel =
+            (url.searchParams.get("channel") as ReleaseChannel | null) ?? config.defaultChannel;
+          const bumpType = url.searchParams.get("bumpType");
+          if (bumpType !== "patch" && bumpType !== "minor" && bumpType !== "major") {
+            sendError(res, 400, "request.invalid", "bumpType must be patch, minor, or major");
+            return true;
+          }
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.suggestVersion({
+                projectKey: match[1],
+                environment,
+                channel,
+                bumpType,
+              }),
+            ),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/builds\/([^/]+)$/, pathname);
+        if (match) {
+          const refreshJenkins = url.searchParams.get("refreshJenkins") === "true";
+          sendJson(
+            res,
+            200,
+            ok({
+              ...runtime.getBuildStatus(match[2]),
+              jenkinsStatus: refreshJenkins ? await runtime.pollJenkinsBuildStatus(match[2]) : null,
+            }),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/releases\/([^/]+)\/preflight$/, pathname);
+        if (match) {
+          sendJson(res, 200, ok(runtime.runReleasePreflight(match[2])));
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/releases\/([^/]+)\/notes$/, pathname);
+        if (match) {
+          sendJson(res, 200, ok(runtime.generateReleaseNotes(match[2])));
+          return true;
+        }
         match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/current$/, pathname);
         if (match) {
           const environment =
@@ -360,6 +560,84 @@ export function createLobsterReleaseHttpHandler(params: {
             config.defaultEnvironment;
           const state = runtime.getChannelState(match[1], environment, match[2] as ReleaseChannel);
           sendJson(res, 200, ok(state));
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/stable$/, pathname);
+        if (match) {
+          const environment =
+            (url.searchParams.get("environment") as ReleaseEnvironment | null) ??
+            config.defaultEnvironment;
+          const limitValue = Number(url.searchParams.get("limit") ?? "");
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.listStableReleases({
+                projectKey: match[1],
+                environment,
+                channel: match[2] as ReleaseChannel,
+                limit: Number.isFinite(limitValue) ? limitValue : undefined,
+              }),
+            ),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/promotions$/, pathname);
+        if (match) {
+          const environment =
+            (url.searchParams.get("environment") as ReleaseEnvironment | null) ??
+            config.defaultEnvironment;
+          const limitValue = Number(url.searchParams.get("limit") ?? "");
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.getPromotionHistory({
+                projectKey: match[1],
+                environment,
+                channel: match[2] as ReleaseChannel,
+                limit: Number.isFinite(limitValue) ? limitValue : undefined,
+              }),
+            ),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/history$/, pathname);
+        if (match) {
+          const environment =
+            (url.searchParams.get("environment") as ReleaseEnvironment | null) ??
+            config.defaultEnvironment;
+          const limitValue = Number(url.searchParams.get("limit") ?? "");
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.getChannelHistory({
+                projectKey: match[1],
+                environment,
+                channel: match[2] as ReleaseChannel,
+                limit: Number.isFinite(limitValue) ? limitValue : undefined,
+              }),
+            ),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/rollback-plan$/, pathname);
+        if (match) {
+          const environment =
+            (url.searchParams.get("environment") as ReleaseEnvironment | null) ??
+            config.defaultEnvironment;
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.getRollbackPlan({
+                projectKey: match[1],
+                environment,
+                channel: match[2] as ReleaseChannel,
+              }),
+            ),
+          );
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/releases\/([^/]+)\/graph$/, pathname);
@@ -418,9 +696,80 @@ export function createLobsterReleaseHttpHandler(params: {
           );
           return true;
         }
+        match = matchPath(/^\/projects\/([^/]+)\/baselines$/, pathname);
+        if (match) {
+          const environment =
+            (url.searchParams.get("environment") as ReleaseEnvironment | null) ??
+            config.defaultEnvironment;
+          const channel =
+            (url.searchParams.get("channel") as ReleaseChannel | null) ?? config.defaultChannel;
+          const platform = url.searchParams.get("platform") ?? "patch";
+          const targetVersion = url.searchParams.get("targetVersion") ?? undefined;
+          const limitValue = Number(url.searchParams.get("limit") ?? "");
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.listBaselines({
+                projectKey: match[1],
+                environment,
+                channel,
+                platform,
+                targetVersion,
+                limit: Number.isFinite(limitValue) ? limitValue : undefined,
+              }),
+            ),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/baselines\/lineage$/, pathname);
+        if (match) {
+          const environment =
+            (url.searchParams.get("environment") as ReleaseEnvironment | null) ??
+            config.defaultEnvironment;
+          const channel =
+            (url.searchParams.get("channel") as ReleaseChannel | null) ?? config.defaultChannel;
+          const platform = url.searchParams.get("platform") ?? "patch";
+          const releaseId = url.searchParams.get("releaseId") ?? undefined;
+          const version = url.searchParams.get("version") ?? undefined;
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.getBaselineLineage({
+                projectKey: match[1],
+                environment,
+                channel,
+                platform,
+                releaseId,
+                version,
+              }),
+            ),
+          );
+          return true;
+        }
         match = matchPath(/^\/projects\/([^/]+)\/rollbacks\/([^/]+)$/, pathname);
         if (match) {
           sendJson(res, 200, ok(runtime.getRollback(match[2])));
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/rollbacks$/, pathname);
+        if (match) {
+          const environment = url.searchParams.get("environment") as ReleaseEnvironment | null;
+          const channel = url.searchParams.get("channel") as ReleaseChannel | null;
+          const limitValue = Number(url.searchParams.get("limit") ?? "");
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.getRollbackAudit({
+                projectKey: match[1],
+                environment: environment ?? undefined,
+                channel: channel ?? undefined,
+                limit: Number.isFinite(limitValue) ? limitValue : undefined,
+              }),
+            ),
+          );
           return true;
         }
       }
@@ -444,6 +793,10 @@ export function createLobsterReleaseHttpHandler(params: {
             git: body.git as CreateReleaseInput["git"],
             targets: normalizeBuildTargets(body.targets),
             notes: typeof body.notes === "string" ? body.notes : undefined,
+            versionSource:
+              typeof body.versionSource === "string"
+                ? (body.versionSource as "manual" | "suggested" | "enforced")
+                : undefined,
             triggerBuild: body.triggerBuild === true,
             createdBy: typeof body.createdBy === "string" ? body.createdBy : undefined,
           });
@@ -489,11 +842,47 @@ export function createLobsterReleaseHttpHandler(params: {
           );
           return true;
         }
+        match = matchPath(/^\/projects\/([^/]+)\/releases\/([^/]+)\/promote$/, pathname);
+        if (match) {
+          const body = await readJsonObjectBody(req, res, {
+            maxBytes: 256 * 1024,
+            timeoutMs: 10_000,
+          });
+          if (!body) {
+            return true;
+          }
+          sendJson(
+            res,
+            200,
+            ok(
+              await runtime.promoteRelease({
+                projectKey: match[1],
+                sourceReleaseId: match[2],
+                targetEnvironment:
+                  (body.targetEnvironment as ReleaseEnvironment | undefined) ??
+                  config.defaultEnvironment,
+                targetChannel:
+                  (body.targetChannel as ReleaseChannel | undefined) ?? config.defaultChannel,
+                notes: typeof body.notes === "string" ? body.notes : undefined,
+                operator: typeof body.operator === "string" ? body.operator : "api",
+              }),
+            ),
+          );
+          return true;
+        }
         match = matchPath(
           /^\/projects\/([^/]+)\/builds\/([^/]+)\/(start|publish|finish)$/,
           pathname,
         );
         if (match) {
+          if (!claimCallbackRateLimit(`signed:${pathname}:${remoteAddress}`)) {
+            res.setHeader("Retry-After", String(CALLBACK_RETRY_AFTER_SECONDS));
+            sendError(res, 429, "request.rate_limited", "callback rate limit exceeded", {
+              retryable: true,
+              retryAfterSeconds: CALLBACK_RETRY_AFTER_SECONDS,
+            });
+            return true;
+          }
           const rawBody = await readRequestBodyWithLimit(req, {
             maxBytes: 1024 * 1024,
             timeoutMs: 10_000,
@@ -503,98 +892,143 @@ export function createLobsterReleaseHttpHandler(params: {
             sendError(res, 403, "auth.invalid_signature", verification.message);
             return true;
           }
-          const body = JSON.parse(rawBody) as Record<string, unknown>;
-          const action = match[3];
-          if (action === "start") {
-            sendJson(
+          let body: Record<string, unknown>;
+          try {
+            body = parseJsonObject(rawBody);
+          } catch (error) {
+            sendError(
               res,
-              200,
-              ok(
-                runtime.recordBuildStart(match[2], {
-                  jenkinsJob: typeof body.jenkinsJob === "string" ? body.jenkinsJob : undefined,
-                  jenkinsBuildNumber:
-                    typeof body.jenkinsBuildNumber === "number"
-                      ? body.jenkinsBuildNumber
-                      : undefined,
-                  jenkinsQueueId:
-                    typeof body.jenkinsQueueId === "string" ? body.jenkinsQueueId : undefined,
-                  executorNode:
-                    typeof body.executorNode === "string" ? body.executorNode : undefined,
-                  executorLabel:
-                    typeof body.executorLabel === "string" ? body.executorLabel : undefined,
-                  startedAt: typeof body.startedAt === "string" ? body.startedAt : undefined,
-                }),
-              ),
+              400,
+              "request.invalid_json",
+              error instanceof Error ? error.message : "invalid JSON body",
             );
+            return true;
+          }
+          const requestHash = sha256Hex(rawBody);
+          const action = match[3];
+          const receiptScope = `signed-callback:${pathname}`;
+          const idempotencyKey = resolveSignedCallbackIdempotencyKey(
+            pathname,
+            req.headers,
+            body,
+            requestHash,
+          );
+          const existingReceipt = runtime.getIdempotencyReceipt(receiptScope, idempotencyKey);
+          if (existingReceipt) {
+            if (existingReceipt.requestHash !== requestHash) {
+              sendError(
+                res,
+                409,
+                "request.idempotency_conflict",
+                "idempotency key reused with different request body",
+              );
+              return true;
+            }
+            sendJson(res, existingReceipt.statusCode, existingReceipt.responseBody);
+            return true;
+          }
+          const nonce = readHeaderString(req.headers["x-nonce"]);
+          if (!nonce || !runtime.claimCallbackNonce(receiptScope, nonce, requestHash)) {
+            sendError(res, 409, "auth.replayed_nonce", "replayed nonce");
+            return true;
+          }
+          if (action === "start") {
+            const responseBody = ok(
+              runtime.recordBuildStart(match[2], {
+                jenkinsJob: typeof body.jenkinsJob === "string" ? body.jenkinsJob : undefined,
+                jenkinsBuildNumber:
+                  typeof body.jenkinsBuildNumber === "number" ? body.jenkinsBuildNumber : undefined,
+                jenkinsQueueId:
+                  typeof body.jenkinsQueueId === "string" ? body.jenkinsQueueId : undefined,
+                executorNode: typeof body.executorNode === "string" ? body.executorNode : undefined,
+                executorLabel:
+                  typeof body.executorLabel === "string" ? body.executorLabel : undefined,
+                startedAt: typeof body.startedAt === "string" ? body.startedAt : undefined,
+              }),
+            );
+            runtime.recordIdempotencyReceipt(
+              receiptScope,
+              idempotencyKey,
+              requestHash,
+              200,
+              responseBody,
+            );
+            sendJson(res, 200, responseBody);
             return true;
           }
           if (action === "publish") {
-            sendJson(
-              res,
-              200,
-              ok(
-                await runtime.recordBuildPublish(match[2], {
-                  environment:
-                    typeof body.environment === "string"
-                      ? (body.environment as ReleaseEnvironment)
-                      : undefined,
-                  channel:
-                    typeof body.channel === "string" ? (body.channel as ReleaseChannel) : undefined,
-                  artifacts: Array.isArray(body.artifacts)
-                    ? (body.artifacts as Array<Record<string, unknown>>).map((artifact) => ({
-                        artifactType:
-                          typeof artifact.artifactType === "string"
-                            ? artifact.artifactType
-                            : typeof artifact.type === "string"
-                              ? artifact.type
-                              : undefined,
-                        type: typeof artifact.type === "string" ? artifact.type : undefined,
-                        platform: readString(artifact.platform, "unknown"),
-                        fileName: readString(artifact.fileName),
-                        fileSizeBytes:
-                          typeof artifact.fileSizeBytes === "number" ? artifact.fileSizeBytes : 0,
-                        sha256: readString(artifact.sha256),
-                        storageProvider: readString(artifact.storageProvider, "unknown"),
-                        storageBucket:
-                          typeof artifact.storageBucket === "string"
-                            ? artifact.storageBucket
+            const responseBody = ok(
+              await runtime.recordBuildPublish(match[2], {
+                environment:
+                  typeof body.environment === "string"
+                    ? (body.environment as ReleaseEnvironment)
+                    : undefined,
+                channel:
+                  typeof body.channel === "string" ? (body.channel as ReleaseChannel) : undefined,
+                artifacts: Array.isArray(body.artifacts)
+                  ? (body.artifacts as Array<Record<string, unknown>>).map((artifact) => ({
+                      artifactType:
+                        typeof artifact.artifactType === "string"
+                          ? artifact.artifactType
+                          : typeof artifact.type === "string"
+                            ? artifact.type
                             : undefined,
-                        storagePath: readString(artifact.storagePath),
-                        downloadUrl:
-                          typeof artifact.downloadUrl === "string"
-                            ? artifact.downloadUrl
-                            : undefined,
-                        manifestRole:
-                          typeof artifact.manifestRole === "string"
-                            ? artifact.manifestRole
-                            : undefined,
-                      }))
-                    : [],
-                }),
-              ),
+                      type: typeof artifact.type === "string" ? artifact.type : undefined,
+                      platform: readString(artifact.platform, "unknown"),
+                      fileName: readString(artifact.fileName),
+                      fileSizeBytes:
+                        typeof artifact.fileSizeBytes === "number" ? artifact.fileSizeBytes : 0,
+                      sha256: readString(artifact.sha256),
+                      storageProvider: readString(artifact.storageProvider, "unknown"),
+                      storageBucket:
+                        typeof artifact.storageBucket === "string"
+                          ? artifact.storageBucket
+                          : undefined,
+                      storagePath: readString(artifact.storagePath),
+                      downloadUrl:
+                        typeof artifact.downloadUrl === "string" ? artifact.downloadUrl : undefined,
+                      manifestRole:
+                        typeof artifact.manifestRole === "string"
+                          ? artifact.manifestRole
+                          : undefined,
+                    }))
+                  : [],
+              }),
             );
+            runtime.recordIdempotencyReceipt(
+              receiptScope,
+              idempotencyKey,
+              requestHash,
+              200,
+              responseBody,
+            );
+            sendJson(res, 200, responseBody);
             return true;
           }
-          sendJson(
-            res,
-            200,
-            ok(
-              await runtime.recordBuildFinish(match[2], {
-                status:
-                  body.status === "failed" || body.status === "canceled" ? body.status : "success",
-                summary: typeof body.summary === "string" ? body.summary : undefined,
-                durationSeconds:
-                  typeof body.durationSeconds === "number" ? body.durationSeconds : undefined,
-                reports:
-                  body.reports && typeof body.reports === "object"
-                    ? (body.reports as Record<string, unknown>)
-                    : undefined,
-                artifactsCount:
-                  typeof body.artifactsCount === "number" ? body.artifactsCount : undefined,
-                error: body.error,
-              }),
-            ),
+          const responseBody = ok(
+            await runtime.recordBuildFinish(match[2], {
+              status:
+                body.status === "failed" || body.status === "canceled" ? body.status : "success",
+              summary: typeof body.summary === "string" ? body.summary : undefined,
+              durationSeconds:
+                typeof body.durationSeconds === "number" ? body.durationSeconds : undefined,
+              reports:
+                body.reports && typeof body.reports === "object"
+                  ? (body.reports as Record<string, unknown>)
+                  : undefined,
+              artifactsCount:
+                typeof body.artifactsCount === "number" ? body.artifactsCount : undefined,
+              error: body.error,
+            }),
           );
+          runtime.recordIdempotencyReceipt(
+            receiptScope,
+            idempotencyKey,
+            requestHash,
+            200,
+            responseBody,
+          );
+          sendJson(res, 200, responseBody);
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/rollback$/, pathname);
@@ -656,10 +1090,38 @@ export function createLobsterReleaseHttpHandler(params: {
       return false;
     } catch (error) {
       logger.warn(`lobster-release http handler failed: ${String(error)}`);
+      if (isCiRoute || isSignedBuildCallback) {
+        runtime.recordSystemEvent({
+          projectKey: callbackProjectKey,
+          environment: config.defaultEnvironment,
+          objectType: "callback",
+          objectId: pathname,
+          eventType: "callback.failed",
+          payload: {
+            route: pathname,
+            originalPath,
+            remoteAddress,
+            isCiRoute,
+            error: String(error),
+          },
+        });
+      }
       if (isCiRoute) {
-        sendCiError(res, 500, String(error));
+        res.setHeader("Retry-After", String(CALLBACK_RETRY_AFTER_SECONDS));
+        sendCiError(res, 500, String(error), {
+          retryable: true,
+          retryAfterSeconds: CALLBACK_RETRY_AFTER_SECONDS,
+        });
       } else {
-        sendError(res, 500, "internal.error", String(error));
+        if (isSignedBuildCallback) {
+          res.setHeader("Retry-After", String(CALLBACK_RETRY_AFTER_SECONDS));
+          sendError(res, 500, "internal.error", String(error), {
+            retryable: true,
+            retryAfterSeconds: CALLBACK_RETRY_AFTER_SECONDS,
+          });
+        } else {
+          sendError(res, 500, "internal.error", String(error));
+        }
       }
       return true;
     }

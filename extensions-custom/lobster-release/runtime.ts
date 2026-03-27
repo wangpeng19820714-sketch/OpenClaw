@@ -47,6 +47,13 @@ const NOTIFICATION_RETRY_BASE_MS = 60_000;
 const NOTIFICATION_MAX_ATTEMPTS = 5;
 const TERMINAL_BUILD_STATUSES = new Set<BuildRecord["status"]>(["finished", "failed", "canceled"]);
 const PATCH_CONFLICT_PATH_SEPARATOR = "/";
+const CALLBACK_NONCE_TTL_MS = 10 * 60_000;
+
+type StoredIdempotencyResponse = {
+  statusCode: number;
+  responseBody: unknown;
+  requestHash: string;
+};
 
 function buildStatusRank(status: BuildRecord["status"]): number {
   switch (status) {
@@ -182,6 +189,61 @@ export class LobsterReleaseRuntime {
     return this.store.getNotificationByDedupeKey(deliveryChannel, params.dedupeKey) ?? record;
   }
 
+  getIdempotencyReceipt(scope: string, idempotencyKey: string): StoredIdempotencyResponse | null {
+    const record = this.store.getIdempotencyReceipt(scope, idempotencyKey);
+    if (!record) {
+      return null;
+    }
+    return {
+      statusCode: record.statusCode,
+      responseBody: record.responseBody,
+      requestHash: record.requestHash,
+    };
+  }
+
+  recordIdempotencyReceipt(
+    scope: string,
+    idempotencyKey: string,
+    requestHash: string,
+    statusCode: number,
+    responseBody: unknown,
+  ): void {
+    const now = nowIso();
+    this.store.upsertIdempotencyReceipt({
+      receiptKey: `${scope}:${idempotencyKey}`,
+      scope,
+      idempotencyKey,
+      requestHash,
+      statusCode,
+      responseBody,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  recordSystemEvent(
+    params: Omit<EventLogRecord, "eventId" | "createdAt" | "projectId">,
+  ): EventLogRecord {
+    const project = this.ensureProject(params.projectKey);
+    return this.recordEvent({
+      ...params,
+      projectId: project.projectId,
+    });
+  }
+
+  claimCallbackNonce(scope: string, nonce: string, requestHash: string): boolean {
+    this.store.purgeExpiredCallbackNonces();
+    const now = Date.now();
+    return this.store.claimCallbackNonce({
+      nonceKey: `${scope}:${nonce}`,
+      scope,
+      nonce,
+      requestHash,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + CALLBACK_NONCE_TTL_MS).toISOString(),
+    });
+  }
+
   private normalizeCiChannel(raw?: string): ReleaseChannel {
     const value = raw?.trim().toLowerCase();
     if (!value || value === "default") {
@@ -262,6 +324,51 @@ export class LobsterReleaseRuntime {
         })
         .find((release) => release.version === params.version) ?? null
     );
+  }
+
+  suggestVersion(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    bumpType: "patch" | "minor" | "major";
+  }): {
+    version: string;
+    bumpType: "patch" | "minor" | "major";
+    source: "suggested";
+    baselineStrategy: "reuse" | "validate" | "reset";
+  } {
+    const channelState = this.getChannelState(
+      params.projectKey,
+      params.environment,
+      params.channel,
+    );
+    const currentRelease = channelState?.currentReleaseId
+      ? this.store.getRelease(channelState.currentReleaseId)
+      : (this.store
+          .listReleases({
+            projectKey: params.projectKey,
+            environment: params.environment,
+            channel: params.channel,
+          })
+          .toSorted((left, right) => compareVersions(right.version, left.version))[0] ?? null);
+    const current = currentRelease ? parseVersion(currentRelease.version) : null;
+    const next =
+      params.bumpType === "major"
+        ? { major: (current?.major ?? 0) + 1, minor: 0, patch: 0 }
+        : params.bumpType === "minor"
+          ? { major: current?.major ?? 0, minor: (current?.minor ?? 0) + 1, patch: 0 }
+          : {
+              major: current?.major ?? 0,
+              minor: current?.minor ?? 0,
+              patch: (current?.patch ?? 0) + 1,
+            };
+    return {
+      version: `${next.major}.${next.minor}.${next.patch}`,
+      bumpType: params.bumpType,
+      source: "suggested",
+      baselineStrategy:
+        params.bumpType === "major" ? "reset" : params.bumpType === "minor" ? "validate" : "reuse",
+    };
   }
 
   private findBuildForCi(params: {
@@ -541,12 +648,548 @@ export class LobsterReleaseRuntime {
     return this.store.getBuild(buildId);
   }
 
+  getBuildStatus(buildId: string): {
+    build: BuildRecord;
+    release: ReleaseRecord | null;
+    artifacts: ArtifactRecord[];
+    provenance: BuildProvenanceRecord | null;
+  } {
+    const build = this.store.getBuild(buildId);
+    if (!build) {
+      throw new Error(`build not found: ${buildId}`);
+    }
+    return {
+      build,
+      release: this.store.getRelease(build.releaseId),
+      artifacts: this.store.listArtifactsForBuild(buildId),
+      provenance: this.store.getBuildProvenance(buildId),
+    };
+  }
+
+  async pollJenkinsBuildStatus(buildId: string): Promise<Record<string, unknown> | null> {
+    const build = this.store.getBuild(buildId);
+    if (!build) {
+      throw new Error(`build not found: ${buildId}`);
+    }
+    if (!this.config.jenkinsBaseUrl || !build.jenkinsJob) {
+      return null;
+    }
+    const headers: Record<string, string> = {};
+    if (this.config.jenkinsUser && this.config.jenkinsApiToken) {
+      headers.Authorization = `Basic ${Buffer.from(
+        `${this.config.jenkinsUser}:${this.config.jenkinsApiToken}`,
+      ).toString("base64")}`;
+    }
+    const polledAt = nowIso();
+    if (build.jenkinsBuildNumber) {
+      const response = await fetch(
+        `${this.config.jenkinsBaseUrl}/job/${encodeURIComponent(build.jenkinsJob)}/${build.jenkinsBuildNumber}/api/json`,
+        { headers },
+      );
+      if (!response.ok) {
+        throw new Error(`jenkins build status request failed with status ${response.status}`);
+      }
+      const payload = (await response.json()) as Record<string, unknown>;
+      return {
+        kind: "build",
+        polledAt,
+        jobName: build.jenkinsJob,
+        buildNumber: build.jenkinsBuildNumber,
+        url: payload.url,
+        building: payload.building,
+        result: payload.result,
+        duration: payload.duration,
+        estimatedDuration: payload.estimatedDuration,
+        timestamp: payload.timestamp,
+      };
+    }
+    if (build.jenkinsQueueId) {
+      const response = await fetch(
+        `${this.config.jenkinsBaseUrl}/queue/item/${build.jenkinsQueueId}/api/json`,
+        { headers },
+      );
+      if (!response.ok) {
+        throw new Error(`jenkins queue status request failed with status ${response.status}`);
+      }
+      const payload = (await response.json()) as Record<string, unknown>;
+      const executable =
+        payload.executable && typeof payload.executable === "object"
+          ? (payload.executable as Record<string, unknown>)
+          : undefined;
+      const buildNumber =
+        typeof executable?.number === "number" ? executable.number : build.jenkinsBuildNumber;
+      if (typeof buildNumber === "number" && buildNumber !== build.jenkinsBuildNumber) {
+        this.store.upsertBuild({
+          ...build,
+          jenkinsBuildNumber: buildNumber,
+          updatedAt: nowIso(),
+        });
+      }
+      return {
+        kind: "queue",
+        polledAt,
+        jobName: build.jenkinsJob,
+        queueId: build.jenkinsQueueId,
+        cancelled: payload.cancelled,
+        why: payload.why,
+        executableNumber: buildNumber,
+        executableUrl: executable?.url,
+      };
+    }
+    return null;
+  }
+
   getRollback(rollbackId: string): RollbackOperationRecord | null {
     return this.store.getRollback(rollbackId);
   }
 
+  listStableReleases(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    limit?: number;
+  }): ReleaseRecord[] {
+    return this.store
+      .listReleases({
+        projectKey: params.projectKey,
+        environment: params.environment,
+        channel: params.channel,
+      })
+      .filter((release) => release.stable)
+      .toSorted((left, right) => compareVersions(right.version, left.version))
+      .slice(0, params.limit ?? 20);
+  }
+
+  getChannelHistory(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    limit?: number;
+  }): {
+    channelState: ChannelStateRecord | null;
+    releases: ReleaseRecord[];
+    edges: ReleaseRelationRecord[];
+  } {
+    const releases = this.store
+      .listReleases({
+        projectKey: params.projectKey,
+        environment: params.environment,
+        channel: params.channel,
+      })
+      .toSorted((left, right) => {
+        const leftTime = left.publishedAt ?? left.updatedAt;
+        const rightTime = right.publishedAt ?? right.updatedAt;
+        return rightTime.localeCompare(leftTime);
+      })
+      .slice(0, params.limit ?? 20);
+    const releaseIds = new Set(releases.map((release) => release.releaseId));
+    const edges = releases
+      .flatMap((release) => this.store.listReleaseRelations(params.projectKey, release.releaseId))
+      .filter(
+        (edge, index, all) =>
+          all.findIndex((item) => item.relationId === edge.relationId) === index,
+      )
+      .filter((edge) => releaseIds.has(edge.fromReleaseId) || releaseIds.has(edge.toReleaseId));
+    return {
+      channelState: this.getChannelState(params.projectKey, params.environment, params.channel),
+      releases,
+      edges,
+    };
+  }
+
+  listBaselines(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    platform: string;
+    targetVersion?: string;
+    limit?: number;
+  }): BaselineRecord[] {
+    return this.store
+      .listBaselines({
+        projectKey: params.projectKey,
+        environment: params.environment,
+        channel: params.channel,
+        platform: params.platform,
+      })
+      .filter((baseline) => !params.targetVersion || baseline.toVersion === params.targetVersion)
+      .slice(0, params.limit ?? 20);
+  }
+
+  getBaselineLineage(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    platform: string;
+    releaseId?: string;
+    version?: string;
+  }): {
+    targetVersion: string;
+    baselines: BaselineRecord[];
+    releases: ReleaseRecord[];
+  } {
+    const release =
+      params.releaseId && this.store.getRelease(params.releaseId)
+        ? this.store.getRelease(params.releaseId)
+        : null;
+    const targetVersion = params.version ?? release?.version;
+    if (!targetVersion) {
+      throw new Error("version or releaseId is required");
+    }
+    const available = this.store
+      .listBaselines({
+        projectKey: params.projectKey,
+        environment: params.environment,
+        channel: params.channel,
+        platform: params.platform,
+      })
+      .map((baseline) => this.repairBaselineManifestUrl(baseline));
+    const chain: BaselineRecord[] = [];
+    const releaseIds = new Set<string>();
+    const seenVersions = new Set<string>();
+    let cursor = targetVersion;
+    while (cursor && !seenVersions.has(cursor)) {
+      seenVersions.add(cursor);
+      const baseline = available.find(
+        (item) => item.toVersion === cursor && item.status === "active",
+      );
+      if (!baseline) {
+        break;
+      }
+      chain.push(baseline);
+      if (baseline.fromReleaseId) {
+        releaseIds.add(baseline.fromReleaseId);
+      }
+      if (baseline.toReleaseId) {
+        releaseIds.add(baseline.toReleaseId);
+      }
+      cursor = baseline.fromVersion;
+    }
+    const releases = [...releaseIds]
+      .map((releaseId) => this.store.getRelease(releaseId))
+      .filter((item): item is ReleaseRecord => Boolean(item))
+      .toSorted((left, right) => compareVersions(right.version, left.version));
+    return {
+      targetVersion,
+      baselines: chain,
+      releases,
+    };
+  }
+
+  getPromotionHistory(params: {
+    projectKey: string;
+    environment?: ReleaseEnvironment;
+    channel?: ReleaseChannel;
+    releaseId?: string;
+    limit?: number;
+  }): Array<{
+    relation: ReleaseRelationRecord;
+    fromRelease: ReleaseRecord | null;
+    toRelease: ReleaseRecord | null;
+  }> {
+    const relations = params.releaseId
+      ? this.store
+          .listReleaseRelations(params.projectKey, params.releaseId)
+          .filter((edge) => edge.relationType === "promoted_from")
+      : this.store.listReleaseRelationsByType(params.projectKey, "promoted_from", params.limit);
+    return relations
+      .map((relation) => {
+        const fromRelease = this.store.getRelease(relation.fromReleaseId);
+        const toRelease = this.store.getRelease(relation.toReleaseId);
+        return { relation, fromRelease, toRelease };
+      })
+      .filter(({ fromRelease, toRelease }) => {
+        if (params.environment) {
+          const matchesEnvironment =
+            fromRelease?.environment === params.environment ||
+            toRelease?.environment === params.environment;
+          if (!matchesEnvironment) {
+            return false;
+          }
+        }
+        if (params.channel) {
+          const matchesChannel =
+            fromRelease?.channel === params.channel || toRelease?.channel === params.channel;
+          if (!matchesChannel) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .slice(0, params.limit ?? 20);
+  }
+
+  getRollbackAudit(params: {
+    projectKey: string;
+    environment?: ReleaseEnvironment;
+    channel?: ReleaseChannel;
+    limit?: number;
+  }): Array<{
+    rollback: RollbackOperationRecord;
+    fromRelease: ReleaseRecord | null;
+    toRelease: ReleaseRecord | null;
+    events: EventLogRecord[];
+  }> {
+    return this.store
+      .listRollbacks({
+        projectKey: params.projectKey,
+        environment: params.environment,
+        channel: params.channel,
+        limit: params.limit,
+      })
+      .map((rollback) => ({
+        rollback,
+        fromRelease: this.store.getRelease(rollback.fromReleaseId),
+        toRelease: this.store.getRelease(rollback.toReleaseId),
+        events: this.store.listEvents({
+          projectKey: params.projectKey,
+          objectType: "rollback",
+          objectId: rollback.rollbackId,
+          limit: 20,
+        }),
+      }));
+  }
+
+  getRollbackPlan(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+  }): {
+    channelState: ChannelStateRecord | null;
+    currentRelease: ReleaseRecord | null;
+    recommendedTargetReleaseId?: string;
+    candidates: Array<{
+      release: ReleaseRecord;
+      compatible: boolean;
+      reason?: string;
+    }>;
+  } {
+    const channelState = this.getChannelState(
+      params.projectKey,
+      params.environment,
+      params.channel,
+    );
+    const currentRelease = channelState?.currentReleaseId
+      ? this.store.getRelease(channelState.currentReleaseId)
+      : null;
+    const candidates = this.listStableReleases({
+      projectKey: params.projectKey,
+      environment: params.environment,
+      channel: params.channel,
+      limit: 20,
+    })
+      .filter((release) => release.releaseId !== currentRelease?.releaseId)
+      .map((release) => {
+        if (!currentRelease) {
+          return { release, compatible: true };
+        }
+        try {
+          this.assertRollbackCompatibility(currentRelease, release);
+          return { release, compatible: true };
+        } catch (error) {
+          return {
+            release,
+            compatible: false,
+            reason: error instanceof Error ? error.message : String(error),
+          };
+        }
+      });
+    const recommendedTargetReleaseId =
+      candidates.find(
+        (item) => item.release.releaseId === channelState?.previousReleaseId && item.compatible,
+      )?.release.releaseId ?? candidates.find((item) => item.compatible)?.release.releaseId;
+    return {
+      channelState,
+      currentRelease,
+      recommendedTargetReleaseId,
+      candidates,
+    };
+  }
+
   getNotification(notificationId: string): NotificationOutboxRecord | null {
     return this.store.getNotification(notificationId);
+  }
+
+  private buildReleaseNotesText(
+    release: ReleaseRecord,
+    build: BuildRecord | null,
+    artifacts: ArtifactRecord[],
+    extraSummary?: string,
+  ): string {
+    const targets = build
+      ? Object.entries(build.targets)
+          .filter(([, enabled]) => enabled)
+          .map(([key]) => key)
+      : [];
+    const lines = [
+      `Release ${release.version}`,
+      `Environment: ${release.environment}`,
+      `Channel: ${release.channel}`,
+      build?.jenkinsBuildNumber ? `Jenkins Build: #${build.jenkinsBuildNumber}` : null,
+      build?.sourceGitCommitShort ? `Commit: ${build.sourceGitCommitShort}` : null,
+      targets.length > 0 ? `Targets: ${targets.join(", ")}` : null,
+      build?.baselineVersion ? `Baseline: ${build.baselineVersion}` : null,
+      artifacts.length > 0
+        ? `Artifacts: ${artifacts.map((artifact) => artifact.fileName).join(", ")}`
+        : null,
+      extraSummary?.trim() ? `Summary: ${extraSummary.trim()}` : null,
+      release.notes?.trim() ? `Notes: ${release.notes.trim()}` : null,
+    ];
+    return lines.filter((line): line is string => Boolean(line)).join("\n");
+  }
+
+  private archiveReleaseChangelog(
+    release: ReleaseRecord,
+    operator: string,
+    params?: {
+      build?: BuildRecord | null;
+      reason?: string;
+      sourceReleaseId?: string;
+      summary?: string;
+    },
+  ): EventLogRecord {
+    const existing = this.store.listEvents({
+      projectKey: release.projectKey,
+      objectType: "release",
+      objectId: release.releaseId,
+      eventType: "release.changelog.archived",
+      limit: 1,
+    })[0];
+    if (existing) {
+      return existing;
+    }
+    const build =
+      params?.build ??
+      (release.currentBuildId ? this.store.getBuild(release.currentBuildId) : null) ??
+      null;
+    const artifacts = build ? this.store.listArtifactsForBuild(build.buildId) : [];
+    const notes = this.buildReleaseNotesText(release, build, artifacts, params?.summary);
+    const event = this.recordEvent({
+      projectId: release.projectId,
+      projectKey: release.projectKey,
+      environment: release.environment,
+      objectType: "release",
+      objectId: release.releaseId,
+      eventType: "release.changelog.archived",
+      payload: {
+        version: release.version,
+        channel: release.channel,
+        environment: release.environment,
+        releaseId: release.releaseId,
+        buildId: build?.buildId ?? null,
+        manifestUrl: this.canonicalManifestUrlForRelease(release) ?? null,
+        notes,
+        sourceNotes: release.notes ?? null,
+        reason: params?.reason ?? "publish",
+        sourceReleaseId: params?.sourceReleaseId ?? null,
+        artifacts: artifacts.map((artifact) => ({
+          artifactType: artifact.artifactType,
+          fileName: artifact.fileName,
+          platform: artifact.platform,
+          downloadUrl: artifact.downloadUrl,
+        })),
+      },
+      createdBy: operator,
+    });
+    this.store.upsertRelease({
+      ...release,
+      metadata: {
+        ...release.metadata,
+        changelogArchiveEventId: event.eventId,
+        changelogArchivedAt: event.createdAt,
+      },
+      updatedAt: nowIso(),
+    });
+    return event;
+  }
+
+  generateReleaseNotes(releaseId: string): {
+    release: ReleaseRecord;
+    build: BuildRecord | null;
+    archived: boolean;
+    notes: string;
+    artifacts: ArtifactRecord[];
+  } {
+    const release = this.store.getRelease(releaseId);
+    if (!release) {
+      throw new Error(`release not found: ${releaseId}`);
+    }
+    const build = release.currentBuildId ? this.store.getBuild(release.currentBuildId) : null;
+    const artifacts = build ? this.store.listArtifactsForBuild(build.buildId) : [];
+    const archived = this.store.listEvents({
+      projectKey: release.projectKey,
+      objectType: "release",
+      objectId: release.releaseId,
+      eventType: "release.changelog.archived",
+      limit: 1,
+    })[0];
+    const notes =
+      typeof archived?.payload.notes === "string"
+        ? archived.payload.notes
+        : this.buildReleaseNotesText(release, build, artifacts);
+    return {
+      release,
+      build,
+      archived: Boolean(archived),
+      notes,
+      artifacts,
+    };
+  }
+
+  runReleasePreflight(releaseId: string): {
+    release: ReleaseRecord;
+    build: BuildRecord | null;
+    artifacts: ArtifactRecord[];
+    passed: boolean;
+    issues: string[];
+    warnings: string[];
+    smokeGate?: Record<string, unknown>;
+  } {
+    const release = this.store.getRelease(releaseId);
+    if (!release) {
+      throw new Error(`release not found: ${releaseId}`);
+    }
+    const build = release.currentBuildId ? this.store.getBuild(release.currentBuildId) : null;
+    const artifacts = build ? this.store.listArtifactsForBuild(build.buildId) : [];
+    const issues: string[] = [];
+    const warnings: string[] = [];
+    if (release.frozen) {
+      issues.push("release is frozen");
+    }
+    if (!build) {
+      issues.push("release has no current build");
+    } else {
+      if (!["uploaded", "finished"].includes(build.status)) {
+        warnings.push(`build status is ${build.status}`);
+      }
+      const smokeGate = this.evaluatePublishSmokeGate(
+        release,
+        build,
+        artifacts,
+        build.reports?.patchValidation as Record<string, unknown> | undefined,
+      );
+      if (smokeGate.passed !== true) {
+        issues.push(...((smokeGate.errors as string[] | undefined) ?? []));
+      }
+      warnings.push(...((smokeGate.warnings as string[] | undefined) ?? []));
+      return {
+        release,
+        build,
+        artifacts,
+        passed: issues.length === 0,
+        issues,
+        warnings,
+        smokeGate,
+      };
+    }
+    return {
+      release,
+      build,
+      artifacts,
+      passed: issues.length === 0,
+      issues,
+      warnings,
+    };
   }
 
   private notificationRetryDelayMs(attemptCount: number): number {
@@ -752,6 +1395,20 @@ export class LobsterReleaseRuntime {
       updatedAt: new Date(failedAt).toISOString(),
     };
     this.store.upsertNotification(next);
+    this.recordEvent({
+      projectId: record.projectId,
+      projectKey: record.projectKey,
+      environment: record.environment,
+      objectType: "notification",
+      objectId: record.notificationId,
+      eventType: "notification.failed",
+      payload: {
+        eventType: record.eventType,
+        attemptCount: next.attemptCount,
+        deadLetteredAt: next.deadLetteredAt ?? null,
+        lastError: error,
+      },
+    });
     return next;
   }
 
@@ -789,6 +1446,17 @@ export class LobsterReleaseRuntime {
     build?: Awaited<ReturnType<LobsterReleaseRuntime["triggerRelease"]>>;
   }> {
     const project = this.ensureProject(input.projectKey);
+    const existing = this.findReleaseByVersion({
+      projectKey: input.projectKey,
+      environment: input.environment,
+      channel: input.channel,
+      version: input.version,
+    });
+    if (existing) {
+      throw new Error(
+        `release version already exists for ${input.projectKey}/${input.environment}/${input.channel}: ${input.version}`,
+      );
+    }
     const currentState = this.getChannelState(input.projectKey, input.environment, input.channel);
     const currentRelease = currentState?.currentReleaseId
       ? this.store.getRelease(currentState.currentReleaseId)
@@ -809,7 +1477,7 @@ export class LobsterReleaseRuntime {
       versionMinor: nextParsed.minor,
       versionPatch: nextParsed.patch,
       versionBumpType: bumpType,
-      versionSource: "manual",
+      versionSource: input.versionSource ?? "manual",
       status: "draft",
       stable: false,
       frozen: false,
@@ -1054,7 +1722,11 @@ export class LobsterReleaseRuntime {
     build: BuildRecord,
     patchManifest: Record<string, unknown>,
     patchBundle?: ArtifactRecord | null,
-  ): void {
+  ): {
+    schema: "design" | "gamexpert";
+    resourceProtocolVersion?: number;
+    baselineVersion?: string;
+  } {
     if (typeof patchManifest.manifestVersion === "number") {
       if (patchManifest.project !== release.projectKey) {
         throw new Error("patch manifest project does not match release");
@@ -1075,18 +1747,24 @@ export class LobsterReleaseRuntime {
       if (!compatibility || typeof compatibility.resourceProtocolVersion !== "number") {
         throw new Error("patch manifest missing compatibility.resourceProtocolVersion");
       }
+      const baselineVersion =
+        patchManifest.baseline && typeof patchManifest.baseline === "object"
+          ? typeof (patchManifest.baseline as Record<string, unknown>).version === "string"
+            ? ((patchManifest.baseline as Record<string, unknown>).version as string)
+            : undefined
+          : undefined;
       if (build.baselineVersion) {
-        const baseline =
-          patchManifest.baseline && typeof patchManifest.baseline === "object"
-            ? (patchManifest.baseline as Record<string, unknown>)
-            : undefined;
-        const baselineVersion = typeof baseline?.version === "string" ? baseline.version : "";
         if (baselineVersion !== build.baselineVersion) {
           throw new Error("patch manifest baseline version does not match build baseline");
         }
       }
+      const manifestInfo = {
+        schema: "design" as const,
+        resourceProtocolVersion: compatibility.resourceProtocolVersion,
+        baselineVersion,
+      };
       if (!patchBundle) {
-        return;
+        return manifestInfo;
       }
       const bundleZip =
         patchManifest.bundleZip && typeof patchManifest.bundleZip === "object"
@@ -1096,7 +1774,7 @@ export class LobsterReleaseRuntime {
       if (bundleFileName && bundleFileName !== patchBundle.fileName) {
         throw new Error("patch manifest bundleZip.fileName does not match uploaded patch bundle");
       }
-      return;
+      return manifestInfo;
     }
     if (typeof patchManifest.format_version === "number") {
       const packages =
@@ -1113,7 +1791,9 @@ export class LobsterReleaseRuntime {
       if (!rawFiles) {
         throw new Error("patch manifest missing raw_files object");
       }
-      return;
+      return {
+        schema: "gamexpert",
+      };
     }
     throw new Error("patch manifest schema is not recognized");
   }
@@ -1240,11 +1920,19 @@ export class LobsterReleaseRuntime {
       throw new Error(`patch manifest file not found: ${patchManifestArtifact.storagePath}`);
     }
     const patchBundle = this.selectPatchBundleArtifact(artifacts);
-    this.validatePatchManifestSchema(release, build, patchManifest, patchBundle);
+    const patchManifestInfo = this.validatePatchManifestSchema(
+      release,
+      build,
+      patchManifest,
+      patchBundle,
+    );
     const patchListArtifact = artifacts.find((artifact) => artifact.artifactType === "patch_list");
     if (!patchListArtifact) {
       return {
         valid: true,
+        schema: patchManifestInfo.schema,
+        resourceProtocolVersion: patchManifestInfo.resourceProtocolVersion,
+        baselineVersion: patchManifestInfo.baselineVersion,
         patchItems: 0,
         conflictPaths: [],
       };
@@ -1268,8 +1956,97 @@ export class LobsterReleaseRuntime {
     }
     return {
       valid: true,
+      schema: patchManifestInfo.schema,
+      resourceProtocolVersion: patchManifestInfo.resourceProtocolVersion,
+      baselineVersion: patchManifestInfo.baselineVersion,
       patchItems: items.length,
       conflictPaths,
+    };
+  }
+
+  private requiredArtifactTypesForBuild(build: BuildRecord): ArtifactRecord["artifactType"][] {
+    const required = new Set<ArtifactRecord["artifactType"]>();
+    if (build.targets.androidApk) {
+      required.add("android_apk");
+    }
+    if (build.targets.androidAab) {
+      required.add("android_aab");
+    }
+    if (build.targets.macosApp) {
+      required.add("macos_zip");
+    }
+    if (build.targets.patch) {
+      required.add("patch_manifest");
+      required.add("patch_bundle");
+    }
+    return [...required];
+  }
+
+  private evaluatePublishSmokeGate(
+    release: ReleaseRecord,
+    build: BuildRecord,
+    artifacts: ArtifactRecord[],
+    patchValidation?: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const requiredArtifactTypes = this.requiredArtifactTypesForBuild(build);
+    const artifactCounts: Partial<Record<ArtifactRecord["artifactType"], number>> = {};
+    const warnings: string[] = [];
+    const errors: string[] = [];
+
+    for (const artifact of artifacts) {
+      artifactCounts[artifact.artifactType] = (artifactCounts[artifact.artifactType] ?? 0) + 1;
+      if (!artifact.fileName.trim()) {
+        errors.push(`artifact ${artifact.artifactId} is missing fileName`);
+      }
+      if (!artifact.sha256.trim()) {
+        errors.push(`artifact ${artifact.fileName} is missing sha256`);
+      }
+      if (!artifact.downloadUrl.trim()) {
+        errors.push(`artifact ${artifact.fileName} is missing downloadUrl`);
+      }
+    }
+
+    for (const artifactType of requiredArtifactTypes) {
+      if ((artifactCounts[artifactType] ?? 0) === 0) {
+        errors.push(`required artifact missing: ${artifactType}`);
+      }
+    }
+
+    if (build.targets.patch) {
+      const compatibility = this.compatibilityForRelease(release);
+      if (build.baselineVersion && !build.baselineManifestUrl) {
+        errors.push("patch build baselineManifestUrl is missing");
+      }
+      if (patchValidation) {
+        if (patchValidation.skipped === true) {
+          const skipReason =
+            typeof patchValidation.reason === "string"
+              ? patchValidation.reason
+              : patchValidation.reason
+                ? JSON.stringify(patchValidation.reason)
+                : "patch validation skipped";
+          warnings.push(skipReason);
+        }
+        if (
+          typeof patchValidation.resourceProtocolVersion === "number" &&
+          patchValidation.resourceProtocolVersion !== compatibility.resourceProtocolVersion
+        ) {
+          errors.push(
+            `patch resourceProtocolVersion ${patchValidation.resourceProtocolVersion} does not match release compatibility ${compatibility.resourceProtocolVersion}`,
+          );
+        }
+      } else {
+        warnings.push("patch validation report is unavailable");
+      }
+    }
+
+    return {
+      passed: errors.length === 0,
+      checkedAt: nowIso(),
+      requiredArtifactTypes,
+      artifactCounts,
+      warnings,
+      errors,
     };
   }
 
@@ -1604,6 +2381,45 @@ export class LobsterReleaseRuntime {
         }),
       ),
     });
+    const release = this.store.getRelease(next.releaseId);
+    if (release) {
+      const startedEvent = this.recordEvent({
+        projectId: release.projectId,
+        projectKey: release.projectKey,
+        environment: release.environment,
+        objectType: "build",
+        objectId: next.buildId,
+        eventType: "build.started",
+        payload: {
+          releaseId: release.releaseId,
+          version: release.version,
+          channel: release.channel,
+          jenkinsJob: next.jenkinsJob,
+          jenkinsBuildNumber: next.jenkinsBuildNumber,
+        },
+      });
+      this.queueNotification({
+        event: startedEvent,
+        dedupeKey: `build.started:${next.buildId}`,
+        payload: {
+          projectKey: release.projectKey,
+          environment: release.environment,
+          channel: release.channel,
+          release: {
+            releaseId: release.releaseId,
+            version: release.version,
+            status: release.status,
+          },
+          build: {
+            buildId: next.buildId,
+            status: next.status,
+            jenkinsJob: next.jenkinsJob,
+            jenkinsBuildNumber: next.jenkinsBuildNumber,
+          },
+          summary: "Build started",
+        },
+      });
+    }
     return next;
   }
 
@@ -1693,15 +2509,24 @@ export class LobsterReleaseRuntime {
     }
     const allArtifacts = this.store.listArtifactsForBuild(buildId);
     const patchValidation = await this.validatePatchArtifacts(release, build, allArtifacts);
+    const smokeGate = this.evaluatePublishSmokeGate(release, build, allArtifacts, patchValidation);
+    const nextReports = {
+      ...build.reports,
+      ...(patchValidation ? { patchValidation } : {}),
+      smokeGate,
+    };
+    if (smokeGate.passed !== true) {
+      this.store.upsertBuild({
+        ...build,
+        reports: nextReports,
+        updatedAt: nowIso(),
+      });
+      throw new Error(`publish smoke gate failed: ${(smokeGate.errors as string[]).join("; ")}`);
+    }
     const updatedBuild: BuildRecord = {
       ...build,
       status: this.advanceBuildStatus(build.status, "uploaded"),
-      reports: patchValidation
-        ? {
-            ...build.reports,
-            patchValidation,
-          }
-        : build.reports,
+      reports: nextReports,
       updatedAt: nowIso(),
     };
     this.store.upsertBuild(updatedBuild);
@@ -1740,7 +2565,10 @@ export class LobsterReleaseRuntime {
             ? "failed"
             : "canceled",
       result: payload.status,
-      reports: payload.reports,
+      reports: {
+        ...build.reports,
+        ...payload.reports,
+      },
       finishedAt: nowIso(),
       updatedAt: nowIso(),
     };
@@ -1764,6 +2592,14 @@ export class LobsterReleaseRuntime {
     this.store.upsertRelease(nextRelease);
     if (nextRelease.status === "published") {
       this.publishChannelPointer(nextRelease, "auto-dev");
+      if (nextRelease.currentBuildId) {
+        await this.generateManifest(nextRelease.releaseId, nextRelease.currentBuildId);
+      }
+      this.archiveReleaseChangelog(nextRelease, "auto-dev", {
+        build: nextRelease.currentBuildId ? this.store.getBuild(nextRelease.currentBuildId) : null,
+        reason: "auto-publish-dev",
+        summary: payload.summary,
+      });
     }
     const event = this.recordEvent({
       projectId: release.projectId,
@@ -1903,6 +2739,13 @@ export class LobsterReleaseRuntime {
       if (next.currentBuildId) {
         await this.generateManifest(next.releaseId, next.currentBuildId);
       }
+      const publishedRelease = this.store.getRelease(next.releaseId) ?? next;
+      this.archiveReleaseChangelog(publishedRelease, operator, {
+        build: publishedRelease.currentBuildId
+          ? this.store.getBuild(publishedRelease.currentBuildId)
+          : null,
+        reason: "approve",
+      });
       this.recordEvent({
         projectId: release.projectId,
         projectKey: release.projectKey,
@@ -1931,17 +2774,175 @@ export class LobsterReleaseRuntime {
           environment: release.environment,
           channel: release.channel,
           release: {
-            releaseId: release.releaseId,
-            version: release.version,
-            status: next.status,
-            manifestUrl: next.manifestUrl,
-            publishedAt: next.publishedAt,
+            releaseId: publishedRelease.releaseId,
+            version: publishedRelease.version,
+            status: publishedRelease.status,
+            manifestUrl: publishedRelease.manifestUrl,
+            publishedAt: publishedRelease.publishedAt,
           },
         },
       });
-      return next;
+      return publishedRelease;
     } finally {
       this.releaseChannelLock(release.projectKey, release.environment, release.channel);
+    }
+  }
+
+  async promoteRelease(params: {
+    projectKey: string;
+    sourceReleaseId: string;
+    targetEnvironment: ReleaseEnvironment;
+    targetChannel: ReleaseChannel;
+    operator: string;
+    notes?: string;
+  }): Promise<ReleaseRecord> {
+    const source = this.store.getRelease(params.sourceReleaseId);
+    if (!source || source.projectKey !== params.projectKey) {
+      throw new Error(`release not found: ${params.sourceReleaseId}`);
+    }
+    if (source.status !== "published" || !source.stable) {
+      throw new Error("only stable published releases can be promoted");
+    }
+    this.acquireChannelLock({
+      projectKey: params.projectKey,
+      environment: params.targetEnvironment,
+      channel: params.targetChannel,
+      owner: params.operator,
+      reason: "promote-release",
+    });
+    try {
+      const existing = this.findReleaseByVersion({
+        projectKey: params.projectKey,
+        environment: params.targetEnvironment,
+        channel: params.targetChannel,
+        version: source.version,
+      });
+      if (existing) {
+        const promotedFromReleaseId =
+          existing.metadata && typeof existing.metadata.promotedFromReleaseId === "string"
+            ? existing.metadata.promotedFromReleaseId
+            : undefined;
+        if (promotedFromReleaseId === source.releaseId) {
+          return existing;
+        }
+        throw new Error(
+          `target channel already has version ${source.version}: ${existing.releaseId}`,
+        );
+      }
+      const targetState = this.getChannelState(
+        params.projectKey,
+        params.targetEnvironment,
+        params.targetChannel,
+      );
+      const currentTargetRelease = targetState?.currentReleaseId
+        ? this.store.getRelease(targetState.currentReleaseId)
+        : null;
+      const parsed = parseVersion(source.version);
+      const now = nowIso();
+      const promoted: ReleaseRecord = {
+        ...source,
+        releaseId: createId("rel"),
+        environment: params.targetEnvironment,
+        channel: params.targetChannel,
+        versionBumpType: inferBumpType(currentTargetRelease?.version, parsed),
+        status: "published",
+        stable: true,
+        frozen: false,
+        notes: params.notes?.trim() || source.notes,
+        createdBy: params.operator,
+        createdAt: now,
+        updatedAt: now,
+        publishedAt: now,
+        manifestPath: undefined,
+        manifestUrl: undefined,
+        metadata: {
+          ...source.metadata,
+          promotedFromReleaseId: source.releaseId,
+          promotedFromChannel: source.channel,
+          promotedFromEnvironment: source.environment,
+          promotedAt: now,
+        },
+      };
+      this.store.upsertRelease(promoted);
+      this.store.insertReleaseRelation({
+        relationId: createId("reln"),
+        projectId: promoted.projectId,
+        projectKey: promoted.projectKey,
+        fromReleaseId: source.releaseId,
+        toReleaseId: promoted.releaseId,
+        relationType: "promoted_from",
+        context: {
+          sourceChannel: source.channel,
+          sourceEnvironment: source.environment,
+          targetChannel: promoted.channel,
+          targetEnvironment: promoted.environment,
+        },
+        createdBy: params.operator,
+        createdAt: now,
+      });
+      this.publishChannelPointer(promoted, params.operator);
+      if (promoted.currentBuildId) {
+        await this.generateManifest(promoted.releaseId, promoted.currentBuildId);
+      }
+      const publishedPromotedRelease = this.store.getRelease(promoted.releaseId) ?? promoted;
+      this.archiveReleaseChangelog(publishedPromotedRelease, params.operator, {
+        build: publishedPromotedRelease.currentBuildId
+          ? this.store.getBuild(publishedPromotedRelease.currentBuildId)
+          : null,
+        reason: "promote",
+        sourceReleaseId: source.releaseId,
+      });
+      this.recordEvent({
+        projectId: publishedPromotedRelease.projectId,
+        projectKey: publishedPromotedRelease.projectKey,
+        environment: publishedPromotedRelease.environment,
+        objectType: "release",
+        objectId: publishedPromotedRelease.releaseId,
+        eventType: "release.promoted",
+        payload: {
+          fromReleaseId: source.releaseId,
+          fromChannel: source.channel,
+          fromEnvironment: source.environment,
+          toChannel: publishedPromotedRelease.channel,
+          toEnvironment: publishedPromotedRelease.environment,
+          version: publishedPromotedRelease.version,
+        },
+        createdBy: params.operator,
+      });
+      const publishedEvent = this.recordEvent({
+        projectId: publishedPromotedRelease.projectId,
+        projectKey: publishedPromotedRelease.projectKey,
+        environment: publishedPromotedRelease.environment,
+        objectType: "release",
+        objectId: publishedPromotedRelease.releaseId,
+        eventType: "release.published",
+        payload: {
+          channel: publishedPromotedRelease.channel,
+          version: publishedPromotedRelease.version,
+          promotedFromReleaseId: source.releaseId,
+        },
+        createdBy: params.operator,
+      });
+      this.queueNotification({
+        event: publishedEvent,
+        dedupeKey: `release.published:${publishedPromotedRelease.releaseId}`,
+        payload: {
+          projectKey: publishedPromotedRelease.projectKey,
+          environment: publishedPromotedRelease.environment,
+          channel: publishedPromotedRelease.channel,
+          release: {
+            releaseId: publishedPromotedRelease.releaseId,
+            version: publishedPromotedRelease.version,
+            status: publishedPromotedRelease.status,
+            manifestUrl: publishedPromotedRelease.manifestUrl,
+            publishedAt: publishedPromotedRelease.publishedAt,
+            promotedFromReleaseId: source.releaseId,
+          },
+        },
+      });
+      return publishedPromotedRelease;
+    } finally {
+      this.releaseChannelLock(params.projectKey, params.targetEnvironment, params.targetChannel);
     }
   }
 
@@ -2052,7 +3053,7 @@ export class LobsterReleaseRuntime {
         approvedBy: approver,
       };
       this.store.upsertRollback(executing);
-      const state = this.getChannelState(
+      const stateBefore = this.getChannelState(
         rollback.projectKey,
         rollback.environment,
         rollback.channel,
@@ -2063,7 +3064,7 @@ export class LobsterReleaseRuntime {
         environment: rollback.environment,
         channel: rollback.channel,
         currentReleaseId: target.releaseId,
-        previousReleaseId: state?.currentReleaseId,
+        previousReleaseId: stateBefore?.currentReleaseId,
         updatedAt: nowIso(),
         updatedBy: approver,
       });
@@ -2093,9 +3094,24 @@ export class LobsterReleaseRuntime {
         createdBy: approver,
         createdAt: nowIso(),
       });
+      const stateAfter = this.getChannelState(
+        rollback.projectKey,
+        rollback.environment,
+        rollback.channel,
+      );
       const completed: RollbackOperationRecord = {
         ...executing,
         status: "completed",
+        manifestAction: {
+          ...executing.manifestAction,
+          audit: {
+            channelStateBefore: stateBefore ?? null,
+            channelStateAfter: stateAfter ?? null,
+            sourceReleaseStatusBefore: current.status,
+            targetReleaseStatusBefore: target.status,
+            completedBy: approver,
+          },
+        },
         completedAt: nowIso(),
       };
       this.store.upsertRollback(completed);
@@ -2116,7 +3132,12 @@ export class LobsterReleaseRuntime {
         objectType: "rollback",
         objectId: rollbackId,
         eventType: "rollback.completed",
-        payload: { fromReleaseId: current.releaseId, toReleaseId: target.releaseId },
+        payload: {
+          fromReleaseId: current.releaseId,
+          toReleaseId: target.releaseId,
+          channelStateBefore: stateBefore ?? null,
+          channelStateAfter: stateAfter ?? null,
+        },
         createdBy: approver,
       });
       this.queueNotification({
