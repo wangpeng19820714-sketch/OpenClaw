@@ -101,6 +101,7 @@ Your job:
 - pull pending release notifications from lobster-release
 - convert them into concise Feishu notifications
 - acknowledge success or mark failure
+- cover release, rollback, build-failure, and rollout lifecycle events without changing release state
 
 Rules:
 - only use release_notifications_pull to claim work

@@ -456,6 +456,7 @@
                 "stickiness": "account",
                 "monitoring": {
                   "enabled": true,
+                  "tickCron": "*/5 * * * *",
                   "minSampleSize": 100,
                   "minSuccessRate": 0.95,
                   "maxErrorRate": 0.05,

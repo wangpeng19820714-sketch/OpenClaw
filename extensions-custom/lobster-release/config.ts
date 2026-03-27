@@ -17,6 +17,8 @@ export type LobsterReleaseProjectPolicy = {
     stickiness: "channel" | "account" | "device";
     monitoring: {
       enabled: boolean;
+      tickCron?: string;
+      tickTimezone?: string;
       minSampleSize: number;
       minSuccessRate: number;
       maxErrorRate: number;
@@ -191,6 +193,8 @@ function resolveProjectPolicy(raw: unknown): LobsterReleaseProjectPolicy {
           : "account",
       monitoring: {
         enabled: monitoringRaw.enabled === true,
+        tickCron: asNonEmptyString(monitoringRaw.tickCron),
+        tickTimezone: asNonEmptyString(monitoringRaw.tickTimezone),
         minSampleSize: asNonNegativeInteger(monitoringRaw.minSampleSize, 100),
         minSuccessRate: asRate(monitoringRaw.minSuccessRate, 0.95),
         maxErrorRate: asRate(monitoringRaw.maxErrorRate, 0.05),

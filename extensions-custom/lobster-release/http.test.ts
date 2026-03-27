@@ -12,6 +12,7 @@ import { LobsterReleaseRuntime } from "./runtime.js";
 import { LobsterReleaseStore } from "./store.js";
 
 const tempDirs: string[] = [];
+const runtimes: LobsterReleaseRuntime[] = [];
 
 async function createHarness(configOverrides: Record<string, unknown> = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lobster-release-http-"));
@@ -35,6 +36,7 @@ async function createHarness(configOverrides: Record<string, unknown> = {}) {
     dir,
   );
   await runtime.start();
+  runtimes.push(runtime);
   const handler = createLobsterReleaseHttpHandler({
     runtime,
     config,
@@ -86,6 +88,9 @@ function signCallback(body: string, nonce: string, token: string) {
 }
 
 afterEach(async () => {
+  while (runtimes.length > 0) {
+    runtimes.pop()?.stop();
+  }
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) {

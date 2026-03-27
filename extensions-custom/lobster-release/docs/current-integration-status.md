@@ -51,6 +51,12 @@ This document records the current live integration status of `lobster-release`, 
 - Active rollback requests now block ordinary trigger, approve, and promote flows on the same channel until rollback finishes.
 - Failed build completion now leaves the release in `failed` state and does not publish the channel.
 - Notification outbox is now implemented for `release.awaiting_approval`, `release.published`, `build.failed`, `build.canceled`, and `rollback.completed`.
+- Notification outbox now also covers rollout lifecycle events:
+  - `rollout.created`
+  - `rollout.advanced`
+  - `rollout.completed`
+  - `rollout.paused`
+  - `rollout.canceled`
 - `lobster-release` now exposes notifier agent tools:
   - `release_notifications_drain`
   - `release_notifications_render`
@@ -119,12 +125,17 @@ This document records the current live integration status of `lobster-release`, 
   - operators can tick a single rollout with an inline observation sample
   - operators can batch-tick all active rollouts for a project/environment/channel
   - batch tick reuses the same health evaluation and auto-action rules as manual rollout evaluation
+- Rollout automatic inspection is now wired into a real scheduler.
+  - project policy can set `grayRelease.monitoring.tickCron`
+  - `lobster-release` arms cron-based startup timers and executes `tickAllRollouts(...)` directly
+  - scheduled rollout inspection does not depend on LLM execution or agent prompts
 - API integration skeleton is now implemented and validated locally.
   - HTTP tests cover project catalog, gray plan, release creation, release graph, callback nonce replay rejection, store status, and maintenance endpoints
 - Local operator workflow now has a dedicated dev start entrypoint.
   - `pnpm lobster:dev` starts the gateway with `configs/openclaw.json`
 - `gamexpert` gray policy is now configured in `configs/openclaw.json`.
   - no runtime-only override is required to enable gray rollout behavior during live drills
+  - scheduled rollout inspection is configured with `grayRelease.monitoring.tickCron = "*/5 * * * *"`
 
 ## Live Validation Results
 
@@ -240,6 +251,14 @@ The following live release regressions were completed successfully:
   - `tickAllRollouts` then batch-processed the same active rollout and advanced it again from `25` to `50`
   - route resolution with `audience=drill` confirmed the rollout release `1.2.17` was selected after both tick operations
   - the rollout was canceled after the drill, leaving no active drill rollout behind
+- `2026-03-27 scheduled rollout tick local regression`
+  - `grayRelease.monitoring.tickCron` now arms startup timers inside the plugin service
+  - a second-level local test schedule advanced a rollout from `10` to `50` without manual `tick` calls
+  - scheduled execution recorded `rollout.tick.completed` audit events
+- `2026-03-27 rollout notifier local regression`
+  - notifier outbox now queues `rollout.created`, `rollout.advanced`, `rollout.completed`, `rollout.paused`, and `rollout.canceled`
+  - rendered notifier messages now include rollout id, traffic percentage, optional scope, action, and pause reasons
+  - rollout lifecycle notifications were validated locally without affecting release state
 
 ## Current Verified State
 

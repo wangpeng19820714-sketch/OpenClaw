@@ -128,6 +128,17 @@
    - pause
    - cancel
 
+当前实现还支持在插件服务内注册真正的定时巡检：
+
+- 当 `grayRelease.monitoring.tickCron` 配置存在时，`lobster-release` 会在 service 启动时按 cron 表达式自动调度对应 `project/environment/channel` 的 `tick_all`
+- 定时任务不依赖 agent prompt 或 LLM 推理，直接调用 runtime 的 `tickAllRollouts(...)`
+- 每次定时巡检都会自动复用已有 observation，按既有监控策略执行：
+  - 扩量
+  - 完成并发布
+  - pause
+  - cancel
+- 若本轮没有活动 rollout，则仅记录调度日志，不会产生副作用
+
 ## 9. 正式配置建议
 
 灰度策略不应只靠 drill 时临时 override，推荐直接写进项目正式配置：
@@ -142,6 +153,7 @@
         "stickiness": "account",
         "monitoring": {
           "enabled": true,
+          "tickCron": "*/5 * * * *",
           "minSampleSize": 100,
           "minSuccessRate": 0.95,
           "maxErrorRate": 0.05,

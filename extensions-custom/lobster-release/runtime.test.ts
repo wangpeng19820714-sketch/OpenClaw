@@ -1,12 +1,13 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveLobsterReleaseConfig } from "./config.js";
 import { LobsterReleaseRuntime } from "./runtime.js";
 import { LobsterReleaseStore } from "./store.js";
 
 const tempDirs: string[] = [];
+const runtimes: LobsterReleaseRuntime[] = [];
 
 async function createRuntime() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lobster-release-"));
@@ -26,6 +27,7 @@ async function createRuntime() {
     dir,
   );
   await runtime.start();
+  runtimes.push(runtime);
   return runtime;
 }
 
@@ -48,10 +50,33 @@ async function createRuntimeWithConfig(overrides: Record<string, unknown>) {
     dir,
   );
   await runtime.start();
+  runtimes.push(runtime);
   return runtime;
 }
 
+function claimNotificationEventTypes(runtime: LobsterReleaseRuntime, limit = 50): string[] {
+  return runtime
+    .pullNotifications({
+      limit,
+      includeFailed: true,
+    })
+    .map((notification) => notification.eventType);
+}
+
+function markClaimedNotificationsSent(runtime: LobsterReleaseRuntime, limit = 50): void {
+  const claimed = runtime.pullNotifications({
+    limit,
+    includeFailed: true,
+  });
+  for (const notification of claimed) {
+    runtime.markNotificationSent(notification.notificationId);
+  }
+}
+
 afterEach(async () => {
+  while (runtimes.length > 0) {
+    runtimes.pop()?.stop();
+  }
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) {
@@ -1493,6 +1518,319 @@ describe("lobster-release runtime", () => {
           appliedAction: expect.objectContaining({ type: "pause" }),
         }),
       ]),
+    );
+  });
+
+  it("runs scheduled rollout tick jobs from monitoring cron", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    try {
+      const runtime = await createRuntimeWithConfig({
+        projects: {
+          projectb: {
+            defaultEnvironment: "production",
+            defaultChannel: "release",
+            environments: ["production"],
+            channels: ["release"],
+            grayRelease: {
+              enabled: true,
+              rolloutPercentages: [10, 50, 100],
+              stickiness: "account",
+              monitoring: {
+                enabled: true,
+                tickCron: "* * * * * *",
+                minSampleSize: 100,
+                minSuccessRate: 0.95,
+                maxErrorRate: 0.05,
+                maxCrashRate: 0.02,
+                autoAdvance: true,
+                autoAdvanceAfterMinutes: 0,
+                publishOnComplete: true,
+                circuitBreakerAction: "pause",
+              },
+            },
+          },
+        },
+      });
+
+      const candidate = await runtime.createRelease({
+        projectKey: "projectb",
+        environment: "production",
+        channel: "release",
+        version: "2.1.0",
+        targets: {
+          androidApk: false,
+          androidAab: true,
+          macosApp: false,
+          patch: false,
+        },
+        triggerBuild: true,
+        createdBy: "tester",
+      });
+      await runtime.recordBuildPublish(candidate.build!.buildId, {
+        artifacts: [
+          {
+            artifactType: "android_aab",
+            platform: "android",
+            fileName: "ProjectB-android-aab-2.1.0-63.aab",
+            fileSizeBytes: 100,
+            sha256: "scheduled-rollout",
+            storageProvider: "s3",
+            storagePath: "releases/2.1.0-63/ProjectB-android-aab-2.1.0-63.aab",
+          },
+        ],
+      });
+      await runtime.recordBuildFinish(candidate.build!.buildId, { status: "success" });
+      const rollout = await runtime.createRollout({
+        projectKey: "projectb",
+        environment: "production",
+        channel: "release",
+        releaseId: candidate.release.releaseId,
+        trafficPercent: 10,
+        operator: "ops",
+      });
+      runtime.recordRolloutObservation({
+        projectKey: "projectb",
+        rolloutId: rollout.rolloutId,
+        sampleSize: 120,
+        successCount: 118,
+        errorCount: 2,
+        crashCount: 0,
+        source: "scheduler-test",
+        operator: "ops",
+      });
+
+      await vi.advanceTimersByTimeAsync(1_500);
+
+      const advanced = runtime.listRollouts({
+        projectKey: "projectb",
+        environment: "production",
+        channel: "release",
+      });
+      expect(advanced[0]?.trafficPercent).toBe(50);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("queues rollout lifecycle notifications for notifier delivery", async () => {
+    const runtime = await createRuntimeWithConfig({
+      defaultProjectKey: "projectb",
+      projects: {
+        projectb: {
+          defaultEnvironment: "production",
+          defaultChannel: "release",
+          environments: ["production"],
+          channels: ["release"],
+          grayRelease: {
+            enabled: true,
+            rolloutPercentages: [10, 50, 100],
+            stickiness: "account",
+            monitoring: {
+              enabled: true,
+              minSampleSize: 100,
+              minSuccessRate: 0.9,
+              maxErrorRate: 0.08,
+              maxCrashRate: 0.02,
+              autoAdvance: true,
+              autoAdvanceAfterMinutes: 0,
+              publishOnComplete: true,
+              circuitBreakerAction: "pause",
+            },
+          },
+        },
+      },
+    });
+
+    const stable = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "3.0.0",
+      targets: {
+        androidApk: false,
+        androidAab: true,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: true,
+      createdBy: "tester",
+    });
+    await runtime.recordBuildPublish(stable.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-3.0.0-70.aab",
+          fileSizeBytes: 100,
+          sha256: "stable-rollout-notify",
+          storageProvider: "s3",
+          storagePath: "releases/3.0.0-70/ProjectB-android-aab-3.0.0-70.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(stable.build!.buildId, { status: "success" });
+    await runtime.approveRelease(stable.release.releaseId, "approver");
+
+    const candidate = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "3.0.1",
+      targets: {
+        androidApk: false,
+        androidAab: true,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: true,
+      createdBy: "tester",
+    });
+    await runtime.recordBuildPublish(candidate.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-3.0.1-71.aab",
+          fileSizeBytes: 100,
+          sha256: "candidate-rollout-notify",
+          storageProvider: "s3",
+          storagePath: "releases/3.0.1-71/ProjectB-android-aab-3.0.1-71.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(candidate.build!.buildId, { status: "success" });
+
+    markClaimedNotificationsSent(runtime);
+
+    const rollout = await runtime.createRollout({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      releaseId: candidate.release.releaseId,
+      trafficPercent: 10,
+      scope: {
+        region: "cn",
+        audience: "internal",
+      },
+      operator: "ops",
+    });
+    const createdNotifications = runtime.pullNotifications({
+      limit: 10,
+      includeFailed: true,
+    });
+    expect(createdNotifications.map((notification) => notification.eventType)).toEqual([
+      "rollout.created",
+    ]);
+    const createdRender = runtime.renderNotification(createdNotifications[0].notificationId);
+    expect(createdRender.messageText).toContain(`Rollout: ${rollout.rolloutId}`);
+    expect(createdRender.messageText).toContain("Traffic: 10%");
+    expect(createdRender.messageText).toContain("Scope: cn / internal");
+    runtime.markNotificationSent(createdNotifications[0].notificationId);
+
+    await runtime.advanceRollout({
+      projectKey: "projectb",
+      rolloutId: rollout.rolloutId,
+      trafficPercent: 50,
+      operator: "ops",
+    });
+    const advancedNotifications = claimNotificationEventTypes(runtime);
+    expect(advancedNotifications).toEqual(["rollout.advanced"]);
+    markClaimedNotificationsSent(runtime);
+
+    runtime.recordRolloutObservation({
+      projectKey: "projectb",
+      rolloutId: rollout.rolloutId,
+      sampleSize: 150,
+      successCount: 90,
+      errorCount: 40,
+      crashCount: 20,
+      source: "synthetic-monitor",
+      operator: "ops",
+    });
+    await runtime.evaluateRollout({
+      projectKey: "projectb",
+      rolloutId: rollout.rolloutId,
+      autoApply: true,
+      operator: "ops",
+    });
+    const pausedNotifications = runtime.pullNotifications({
+      limit: 10,
+      includeFailed: true,
+    });
+    expect(pausedNotifications.map((notification) => notification.eventType)).toEqual([
+      "rollout.paused",
+    ]);
+    const pausedRender = runtime.renderNotification(pausedNotifications[0].notificationId);
+    expect(pausedRender.messageText).toContain("Health: unhealthy");
+    expect(pausedRender.messageText).toContain("Action: pause");
+    runtime.markNotificationSent(pausedNotifications[0].notificationId);
+
+    runtime.cancelRollout({
+      projectKey: "projectb",
+      rolloutId: rollout.rolloutId,
+      operator: "ops",
+      reason: "manual stop",
+    });
+    const canceledNotifications = runtime.pullNotifications({
+      limit: 10,
+      includeFailed: true,
+    });
+    expect(canceledNotifications.map((notification) => notification.eventType)).toEqual([
+      "rollout.canceled",
+    ]);
+    const canceledRender = runtime.renderNotification(canceledNotifications[0].notificationId);
+    expect(canceledRender.messageText).toContain("Reason: manual stop");
+    runtime.markNotificationSent(canceledNotifications[0].notificationId);
+
+    const completedCandidate = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "3.0.2",
+      targets: {
+        androidApk: false,
+        androidAab: true,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: true,
+      createdBy: "tester",
+    });
+    await runtime.recordBuildPublish(completedCandidate.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-3.0.2-72.aab",
+          fileSizeBytes: 100,
+          sha256: "completed-rollout-notify",
+          storageProvider: "s3",
+          storagePath: "releases/3.0.2-72/ProjectB-android-aab-3.0.2-72.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(completedCandidate.build!.buildId, { status: "success" });
+    markClaimedNotificationsSent(runtime);
+
+    const completingRollout = await runtime.createRollout({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      releaseId: completedCandidate.release.releaseId,
+      trafficPercent: 50,
+      operator: "ops",
+    });
+    markClaimedNotificationsSent(runtime);
+    await runtime.advanceRollout({
+      projectKey: "projectb",
+      rolloutId: completingRollout.rolloutId,
+      complete: true,
+      operator: "ops",
+    });
+    const completedNotifications = claimNotificationEventTypes(runtime);
+    expect(completedNotifications).toEqual(
+      expect.arrayContaining(["rollout.completed", "release.published"]),
     );
   });
 

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PluginLogger } from "openclaw/plugin-sdk/lobster";
+import { computeNextRunAtMs } from "../../src/cron/schedule.js";
 import type { LobsterReleaseConfig, LobsterReleaseProjectPolicy } from "./config.js";
 import { LobsterReleaseStore } from "./store.js";
 import type {
@@ -71,6 +72,16 @@ const MANAGED_ROLLOUT_STATUSES = new Set<RolloutRecord["status"]>(["draft", "act
 const ROUTABLE_ROLLOUT_STATUSES = new Set<RolloutRecord["status"]>(["active"]);
 const PATCH_CONFLICT_PATH_SEPARATOR = "/";
 const CALLBACK_NONCE_TTL_MS = 10 * 60_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+type ScheduledRolloutTickTarget = {
+  jobKey: string;
+  projectKey: string;
+  environment: ReleaseEnvironment;
+  channel: ReleaseChannel;
+  cron: string;
+  timezone?: string;
+};
 
 type StoredIdempotencyResponse = {
   statusCode: number;
@@ -97,6 +108,9 @@ function buildStatusRank(status: BuildRecord["status"]): number {
 
 export class LobsterReleaseRuntime {
   private readonly manifestsDir: string;
+  private readonly rolloutTickTimers = new Map<string, NodeJS.Timeout>();
+  private readonly rolloutTickInFlight = new Set<string>();
+  private schedulerEnabled = false;
 
   constructor(
     private readonly store: LobsterReleaseStore,
@@ -110,9 +124,13 @@ export class LobsterReleaseRuntime {
   async start(): Promise<void> {
     await this.store.load();
     await fs.mkdir(this.manifestsDir, { recursive: true, mode: 0o700 });
+    this.schedulerEnabled = true;
+    this.refreshScheduledRolloutTickJobs();
   }
 
   stop(): void {
+    this.schedulerEnabled = false;
+    this.stopScheduledRolloutTickJobs();
     this.store.close();
   }
 
@@ -213,6 +231,91 @@ export class LobsterReleaseRuntime {
     return this.store.getNotificationByDedupeKey(deliveryChannel, params.dedupeKey) ?? record;
   }
 
+  private buildRolloutNotificationPayload(params: {
+    rollout: RolloutRecord;
+    release?: ReleaseRecord | null;
+    summary: string;
+    reason?: string;
+    action?: string;
+    status?: RolloutHealthStatus;
+  }): Record<string, unknown> {
+    const { rollout, release, summary, reason, action, status } = params;
+    const scope: Record<string, string> = {};
+    if (rollout.scope.region) {
+      scope.region = rollout.scope.region;
+    }
+    if (rollout.scope.audience) {
+      scope.audience = rollout.scope.audience;
+    }
+    return {
+      projectKey: rollout.projectKey,
+      environment: rollout.environment,
+      channel: rollout.channel,
+      release: release
+        ? {
+            releaseId: release.releaseId,
+            version: release.version,
+            status: release.status,
+            manifestUrl: release.manifestUrl,
+          }
+        : {
+            releaseId: rollout.releaseId,
+          },
+      rollout: {
+        rolloutId: rollout.rolloutId,
+        releaseId: rollout.releaseId,
+        status: rollout.status,
+        trafficPercent: rollout.trafficPercent,
+        stickiness: rollout.stickiness,
+        scope,
+        createdBy: rollout.createdBy,
+        startedAt: rollout.startedAt,
+        completedAt: rollout.completedAt,
+        canceledAt: rollout.canceledAt,
+      },
+      summary,
+      ...(reason ? { reason } : {}),
+      ...(action ? { action } : {}),
+      ...(status
+        ? {
+            rolloutHealth: {
+              health: status.health,
+              sampleSize: status.aggregate.sampleSize,
+              successRate: status.aggregate.successRate,
+              errorRate: status.aggregate.errorRate,
+              crashRate: status.aggregate.crashRate,
+              latestObservedAt: status.aggregate.latestObservedAt,
+              nextTrafficPercent: status.nextTrafficPercent,
+            },
+          }
+        : {}),
+    };
+  }
+
+  private queueRolloutNotification(params: {
+    event: EventLogRecord;
+    dedupeKey: string;
+    rollout: RolloutRecord;
+    release?: ReleaseRecord | null;
+    summary: string;
+    reason?: string;
+    action?: string;
+    status?: RolloutHealthStatus;
+  }): NotificationOutboxRecord {
+    return this.queueNotification({
+      event: params.event,
+      dedupeKey: params.dedupeKey,
+      payload: this.buildRolloutNotificationPayload({
+        rollout: params.rollout,
+        release: params.release,
+        summary: params.summary,
+        reason: params.reason,
+        action: params.action,
+        status: params.status,
+      }),
+    });
+  }
+
   getIdempotencyReceipt(scope: string, idempotencyKey: string): StoredIdempotencyResponse | null {
     const record = this.store.getIdempotencyReceipt(scope, idempotencyKey);
     if (!record) {
@@ -273,6 +376,150 @@ export class LobsterReleaseRuntime {
         smokeWorkflows: [],
       }
     );
+  }
+
+  private stopScheduledRolloutTickJobs(): void {
+    for (const timer of this.rolloutTickTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.rolloutTickTimers.clear();
+    this.rolloutTickInFlight.clear();
+  }
+
+  private refreshScheduledRolloutTickJobs(): void {
+    this.stopScheduledRolloutTickJobs();
+    if (!this.schedulerEnabled) {
+      return;
+    }
+    const targets = this.listScheduledRolloutTickTargets();
+    for (const target of targets) {
+      this.armScheduledRolloutTick(target);
+    }
+    if (targets.length > 0) {
+      this.logger.info(`lobster-release: armed ${targets.length} rollout tick schedule(s)`);
+    }
+  }
+
+  private listScheduledRolloutTickTargets(): ScheduledRolloutTickTarget[] {
+    const targets: ScheduledRolloutTickTarget[] = [];
+    const projectKeys = uniqueStrings([
+      this.config.defaultProjectKey,
+      ...Object.keys(this.config.projects),
+    ]);
+    for (const projectKey of projectKeys) {
+      const policy = this.getProjectPolicy(projectKey);
+      const monitoring = policy.grayRelease.monitoring;
+      if (!policy.grayRelease.enabled || !monitoring.enabled || !monitoring.tickCron) {
+        continue;
+      }
+      for (const environment of policy.environments) {
+        for (const channel of policy.channels) {
+          targets.push({
+            jobKey: `${projectKey}:${environment}:${channel}`,
+            projectKey,
+            environment,
+            channel,
+            cron: monitoring.tickCron,
+            timezone: monitoring.tickTimezone,
+          });
+        }
+      }
+    }
+    return targets;
+  }
+
+  private armScheduledRolloutTick(target: ScheduledRolloutTickTarget): void {
+    if (!this.schedulerEnabled) {
+      return;
+    }
+    const nextRunAtMs = computeNextRunAtMs(
+      {
+        kind: "cron",
+        expr: target.cron,
+        tz: target.timezone,
+      },
+      Date.now(),
+    );
+    if (typeof nextRunAtMs !== "number" || !Number.isFinite(nextRunAtMs)) {
+      this.logger.warn(
+        `lobster-release: invalid rollout tick schedule for ${target.jobKey} (${target.cron})`,
+      );
+      return;
+    }
+    const delayMs = Math.max(1_000, Math.min(MAX_TIMER_DELAY_MS, nextRunAtMs - Date.now()));
+    const timer = setTimeout(() => {
+      void this.runScheduledRolloutTick(target);
+    }, delayMs);
+    this.rolloutTickTimers.set(target.jobKey, timer);
+  }
+
+  private async runScheduledRolloutTick(target: ScheduledRolloutTickTarget): Promise<void> {
+    if (this.rolloutTickInFlight.has(target.jobKey)) {
+      this.armScheduledRolloutTick(target);
+      return;
+    }
+    this.rolloutTickInFlight.add(target.jobKey);
+    try {
+      const result = await this.tickAllRollouts({
+        projectKey: target.projectKey,
+        environment: target.environment,
+        channel: target.channel,
+        autoApply: true,
+        operator: "rollout-scheduler",
+      });
+      const appliedActions = result.results.filter((entry) => entry.appliedAction).length;
+      if (result.processed > 0 || appliedActions > 0) {
+        this.recordSystemEvent({
+          projectKey: target.projectKey,
+          environment: target.environment,
+          objectType: "channel",
+          objectId: `${target.environment}:${target.channel}`,
+          eventType: "rollout.tick.completed",
+          payload: {
+            channel: target.channel,
+            processed: result.processed,
+            appliedActions,
+            statuses: result.results.map((entry) => ({
+              rolloutId: entry.rolloutId,
+              status: entry.status,
+              health: entry.health,
+              action: entry.appliedAction?.type ?? null,
+            })),
+          },
+          createdBy: "rollout-scheduler",
+        });
+        this.logger.info(
+          `lobster-release: scheduled rollout tick processed ${result.processed} rollout(s) for ${target.projectKey}/${target.environment}/${target.channel}`,
+        );
+      } else if (this.logger.debug) {
+        this.logger.debug(
+          `lobster-release: scheduled rollout tick found no active rollout work for ${target.projectKey}/${target.environment}/${target.channel}`,
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.recordSystemEvent({
+        projectKey: target.projectKey,
+        environment: target.environment,
+        objectType: "channel",
+        objectId: `${target.environment}:${target.channel}`,
+        eventType: "rollout.tick.failed",
+        payload: {
+          channel: target.channel,
+          cron: target.cron,
+          error: message,
+        },
+        createdBy: "rollout-scheduler",
+      });
+      this.logger.error(
+        `lobster-release: scheduled rollout tick failed for ${target.projectKey}/${target.environment}/${target.channel}: ${message}`,
+      );
+    } finally {
+      this.rolloutTickInFlight.delete(target.jobKey);
+      if (this.schedulerEnabled) {
+        this.armScheduledRolloutTick(target);
+      }
+    }
   }
 
   private resolveProjectEnvironment(projectKey: string, environment?: string): ReleaseEnvironment {
@@ -1850,7 +2097,17 @@ export class LobsterReleaseRuntime {
     const release = (payload.release as Record<string, unknown> | undefined) ?? {};
     const build = (payload.build as Record<string, unknown> | undefined) ?? {};
     const rollback = (payload.rollback as Record<string, unknown> | undefined) ?? {};
+    const rollout = (payload.rollout as Record<string, unknown> | undefined) ?? {};
+    const rolloutHealth = (payload.rolloutHealth as Record<string, unknown> | undefined) ?? {};
     const summary = typeof payload.summary === "string" ? payload.summary : undefined;
+    const scopeLines = [
+      typeof rollout.scope === "object" && rollout.scope
+        ? ((rollout.scope as Record<string, unknown>).region as string | undefined)
+        : undefined,
+      typeof rollout.scope === "object" && rollout.scope
+        ? ((rollout.scope as Record<string, unknown>).audience as string | undefined)
+        : undefined,
+    ].filter((value): value is string => Boolean(value));
     const lines = [
       `[Lobster Release] ${notification.eventType}`,
       `Project: ${notification.projectKey}`,
@@ -1863,8 +2120,17 @@ export class LobsterReleaseRuntime {
         ? `Jenkins Build: #${build.jenkinsBuildNumber}`
         : null,
       typeof rollback.rollbackId === "string" ? `Rollback: ${rollback.rollbackId}` : null,
+      typeof rollout.rolloutId === "string" ? `Rollout: ${rollout.rolloutId}` : null,
+      typeof rollout.trafficPercent === "number" ? `Traffic: ${rollout.trafficPercent}%` : null,
+      scopeLines.length > 0 ? `Scope: ${scopeLines.join(" / ")}` : null,
+      typeof payload.action === "string" ? `Action: ${payload.action}` : null,
+      typeof rolloutHealth.health === "string" ? `Health: ${rolloutHealth.health}` : null,
       summary ? `Summary: ${summary}` : null,
-      typeof rollback.reason === "string" ? `Reason: ${rollback.reason}` : null,
+      typeof payload.reason === "string"
+        ? `Reason: ${payload.reason}`
+        : typeof rollback.reason === "string"
+          ? `Reason: ${rollback.reason}`
+          : null,
       typeof notification.lastError === "string" ? `Last Error: ${notification.lastError}` : null,
     ]
       .filter((line): line is string => Boolean(line))
@@ -4354,7 +4620,7 @@ export class LobsterReleaseRuntime {
       },
     };
     this.store.upsertRollout(rollout);
-    this.recordEvent({
+    const createdEvent = this.recordEvent({
       projectId: project.projectId,
       projectKey: input.projectKey,
       environment,
@@ -4368,6 +4634,14 @@ export class LobsterReleaseRuntime {
         channel,
       },
       createdBy: rollout.createdBy,
+    });
+    this.queueRolloutNotification({
+      event: createdEvent,
+      dedupeKey: `rollout.created:${rollout.rolloutId}`,
+      rollout,
+      release: this.store.getRelease(rollout.releaseId),
+      summary: `Rollout created at ${rollout.trafficPercent}%`,
+      action: "create",
     });
     return rollout;
   }
@@ -4425,7 +4699,7 @@ export class LobsterReleaseRuntime {
         allowActiveRollout: true,
       });
     }
-    this.recordEvent({
+    const rolloutEvent = this.recordEvent({
       projectId: rollout.projectId,
       projectKey: rollout.projectKey,
       environment: rollout.environment,
@@ -4439,7 +4713,19 @@ export class LobsterReleaseRuntime {
       },
       createdBy: input.operator ?? "system",
     });
-    return this.store.getRollout(rollout.rolloutId) ?? next;
+    const latest = this.store.getRollout(rollout.rolloutId) ?? next;
+    this.queueRolloutNotification({
+      event: rolloutEvent,
+      dedupeKey: `${rolloutEvent.eventType}:${latest.rolloutId}:${latest.trafficPercent}`,
+      rollout: latest,
+      release: this.store.getRelease(latest.releaseId),
+      summary:
+        latest.status === "completed"
+          ? `Rollout completed at ${latest.trafficPercent}%`
+          : `Rollout advanced to ${latest.trafficPercent}%`,
+      action: latest.status === "completed" ? "complete" : "advance",
+    });
+    return latest;
   }
 
   cancelRollout(input: CancelRolloutInput): RolloutRecord {
@@ -4464,7 +4750,7 @@ export class LobsterReleaseRuntime {
       },
     };
     this.store.upsertRollout(next);
-    this.recordEvent({
+    const canceledEvent = this.recordEvent({
       projectId: rollout.projectId,
       projectKey: rollout.projectKey,
       environment: rollout.environment,
@@ -4476,6 +4762,15 @@ export class LobsterReleaseRuntime {
         reason: input.reason,
       },
       createdBy: input.operator ?? "system",
+    });
+    this.queueRolloutNotification({
+      event: canceledEvent,
+      dedupeKey: `rollout.canceled:${next.rolloutId}:${next.updatedAt}`,
+      rollout: next,
+      release: this.store.getRelease(next.releaseId),
+      summary: "Rollout canceled",
+      reason: input.reason,
+      action: "cancel",
     });
     return next;
   }
@@ -4624,7 +4919,7 @@ export class LobsterReleaseRuntime {
         };
         this.store.upsertRollout(paused);
         latestRollout = paused;
-        this.recordEvent({
+        const pausedEvent = this.recordEvent({
           projectId: paused.projectId,
           projectKey: paused.projectKey,
           environment: paused.environment,
@@ -4636,6 +4931,16 @@ export class LobsterReleaseRuntime {
             reason: action.reason,
           },
           createdBy: input.operator ?? "system",
+        });
+        this.queueRolloutNotification({
+          event: pausedEvent,
+          dedupeKey: `rollout.paused:${paused.rolloutId}:${paused.updatedAt}`,
+          rollout: paused,
+          release: this.store.getRelease(paused.releaseId),
+          summary: "Rollout paused by circuit breaker",
+          reason: action.reason,
+          action: "pause",
+          status,
         });
       } else if (action.type === "cancel") {
         latestRollout = this.cancelRollout({

@@ -416,6 +416,7 @@ Notes:
 - scans all active rollouts in the requested channel
 - evaluates each rollout with the current observation set
 - does not inject new observations; use `observe` or `tick` for per-rollout samples
+- when project policy configures `grayRelease.monitoring.tickCron`, the plugin service will run this flow automatically on schedule
 
 ### 4A.10 Resolve Channel Route
 
