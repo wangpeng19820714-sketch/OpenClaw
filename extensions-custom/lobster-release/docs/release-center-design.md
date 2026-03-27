@@ -229,6 +229,12 @@
 7. Agent 自动发布和自动检查
 8. 版本与运营数据联动
 
+当前阶段决策：
+
+- rollout observation 与自动巡检能力已经实现
+- 正式运营数据、BI 或线上分析系统暂不接入第一阶段发布中心
+- 后续若接入运营数据，应复用现有 rollout observation / monitoring 输入面，而不是重做灰度控制模型
+
 ## 4. 推荐产品形态
 
 建议分两层：
@@ -1329,25 +1335,25 @@ PostgreSQL in Docker 的推荐形态：
 这件事对应的工程拆解应该是：
 
 1. 抽象 store 接口，不再把 runtime 直接绑定到 `node:sqlite`
-2. 第一阶段先保留当前同步 runtime，新增一个 `PostgreSQL` cache-backed store：
-   - 启动时从 PostgreSQL 预加载核心表到内存
-   - 写入通过串行后台队列回刷到 PostgreSQL
-3. 第二阶段再把 store/runtime 主路径重构成可以兼容 PostgreSQL 的异步直连调用
-   - 当前已经先完成核心 `create / CI callback / approve` 主路径
-   - 现在也已经覆盖 `rollout / rollback / promote / maintenance`
+2. 第一阶段引入 `PostgreSQL` store 并完成 bootstrap、迁移、配置切换与容器化部署样例
+3. 第二阶段把 store/runtime 主路径推进为异步直连调用
+   - 已覆盖 `create / trigger / CI callback / approve / manifest / query`
+   - 已覆盖 `rollout / rollback / promote / maintenance`
+   - 已覆盖通知、事件、history、promotion 等辅助读写路径
 4. 把锁、nonce、幂等、outbox 的关键写路径升级成事务化写入
 5. 增加连接配置、迁移和 bootstrap
 6. 提供 `docker compose` 样例和迁移脚本
-7. 已完成两轮 `PostgreSQL in Docker` 真实 drill：
+7. 已完成多轮 `PostgreSQL in Docker` 真实 drill：
    - `create / CI callback / approve / query`
    - `rollout / route / rollback / maintenance`
+   - `notifications / events / channel history / promotion history`
 
-这里有一个很关键的工程现实：
+当前工程现实是：
 
-- 现在 `SQLite` 方案大量依赖同步 store 调用
-- Node 里的 PostgreSQL 驱动是异步模型
-- 所以 PostgreSQL 的第一阶段实现更适合用 cache-backed bridge 先接入
-- 真正的最终形态，仍然应该是 async direct-store + 事务化写入
+- `SQLite` 路径仍保留同步兼容入口
+- `PostgreSQL` 路径已经推进到 async direct-store + 事务化关键写入
+- `PostgresLobsterReleaseStore` 的正常 handler / tool 流程不再依赖 in-memory mirror
+- 后续如果继续演进，重点会落在进一步减少 SQLite 式同步兼容面，而不是回到 cache-backed 模式
 
 ### 11.2 文件存储
 
@@ -1539,7 +1545,7 @@ PostgreSQL in Docker 的推荐形态：
 
 ## 15. 我建议你现在先定的几个关键决策
 
-在真正开写代码前，建议先拍板下面 9 件事：
+在真正开写代码前，建议先拍板下面 10 件事：
 
 1. `lobster-release` 是纯 API 服务，还是 OpenClaw 插件加 API 混合体
 2. 当前实现数据库是否继续保留 `SQLite`
@@ -1565,23 +1571,26 @@ PostgreSQL in Docker 的推荐形态：
 9. Jenkins 目前是直接 HTTP 调用与回调
 10. Jenkins 与服务端都应保留重试能力，但服务端必须幂等接收
 
-## 16. 推荐的目录演进
+## 16. 当前目录形态
 
-当前先保留文档，后面实现时建议按这个结构扩展：
+第一阶段已经按插件目录落地，当前不再额外拆分独立的 `src/server / src/domain / src/storage / src/openclaw` 骨架：
 
 ```text
 extensions-custom/lobster-release/
   README.md
   docs/
-    release-center-design.md
-  src/
-    server/
-    domain/
-    storage/
-    openclaw/
+  config.ts
+  http.ts
+  index.ts
+  postgres.runtime.ts
+  runtime.ts
+  store.ts
+  types.ts
   package.json
   openclaw.plugin.json
 ```
+
+如果后续继续拆分，建议基于现有插件实现按模块内聚重构，而不是为了目录形式再补一套平行 `src/` 骨架。
 
 其中：
 

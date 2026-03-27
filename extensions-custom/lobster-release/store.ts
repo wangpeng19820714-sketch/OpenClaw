@@ -1514,21 +1514,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   private loaded = false;
   private fatalWriteError: Error | undefined;
   private readonly schemaMeta = new Map<string, SchemaMetaRecord>();
-  private readonly projects = new Map<string, ProjectRecord>();
-  private readonly releases = new Map<string, ReleaseRecord>();
-  private readonly builds = new Map<string, BuildRecord>();
-  private readonly artifacts = new Map<string, ArtifactRecord>();
-  private readonly channelStates = new Map<string, ChannelStateRecord>();
-  private readonly releaseRelations = new Map<string, ReleaseRelationRecord>();
-  private readonly buildProvenance = new Map<string, BuildProvenanceRecord>();
-  private readonly rollbacks = new Map<string, RollbackOperationRecord>();
-  private readonly rollouts = new Map<string, RolloutRecord>();
-  private readonly events = new Map<string, EventLogRecord>();
-  private readonly callbackNonces = new Map<string, CallbackNonceRecord>();
-  private readonly idempotencyReceipts = new Map<string, IdempotencyReceiptRecord>();
-  private readonly notifications = new Map<string, NotificationOutboxRecord>();
-  private readonly baselines = new Map<string, BaselineRecord>();
-  private readonly locks = new Map<string, OperationLockRecord>();
 
   constructor(
     private readonly connectionString: string,
@@ -1582,7 +1567,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async upsertProjectAsync(record: ProjectRecord): Promise<void> {
-    this.projects.set(record.projectKey, record);
     await this.executeDirect(
       `upsertProject:${record.projectKey}`,
       `INSERT INTO ${this.table("projects")} (project_key, updated_at, record_json)
@@ -1603,15 +1587,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async getProjectAsync(projectKey: string): Promise<ProjectRecord | null> {
-    const record = await this.selectSingleByField<ProjectRecord>(
-      "projects",
-      "project_key",
-      projectKey,
-    );
-    if (record) {
-      this.projects.set(record.projectKey, record);
-    }
-    return record;
+    return this.selectSingleByField<ProjectRecord>("projects", "project_key", projectKey);
   }
 
   upsertRelease(_record: ReleaseRecord): void {
@@ -1635,11 +1611,9 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
         JSON.stringify(record),
       ],
     );
-    this.events.set(record.eventId, record);
   }
 
   async upsertReleaseAsync(record: ReleaseRecord): Promise<void> {
-    this.releases.set(record.releaseId, record);
     await this.executeDirect(
       `upsertRelease:${record.releaseId}`,
       `INSERT INTO ${this.table("releases")} (
@@ -1671,15 +1645,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async getReleaseAsync(releaseId: string): Promise<ReleaseRecord | null> {
-    const record = await this.selectSingleByField<ReleaseRecord>(
-      "releases",
-      "release_id",
-      releaseId,
-    );
-    if (record) {
-      this.releases.set(record.releaseId, record);
-    }
-    return record;
+    return this.selectSingleByField<ReleaseRecord>("releases", "release_id", releaseId);
   }
 
   listReleases(_params: {
@@ -1713,9 +1679,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
       orderBy: "updated_at DESC",
       limit: params.limit,
     });
-    for (const record of records) {
-      this.builds.set(record.buildId, record);
-    }
     return records;
   }
 
@@ -1749,9 +1712,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
       orderBy: "updated_at DESC",
       limit: params.limit,
     });
-    for (const record of records) {
-      this.releases.set(record.releaseId, record);
-    }
     return records;
   }
 
@@ -1760,7 +1720,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async upsertBuildAsync(record: BuildRecord): Promise<void> {
-    this.builds.set(record.buildId, record);
     await this.executeDirect(
       `upsertBuild:${record.buildId}`,
       `INSERT INTO ${this.table("builds")} (
@@ -1788,11 +1747,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async getBuildAsync(buildId: string): Promise<BuildRecord | null> {
-    const record = await this.selectSingleByField<BuildRecord>("builds", "build_id", buildId);
-    if (record) {
-      this.builds.set(record.buildId, record);
-    }
-    return record;
+    return this.selectSingleByField<BuildRecord>("builds", "build_id", buildId);
   }
 
   listBuildsForRelease(_releaseId: string): BuildRecord[] {
@@ -1813,7 +1768,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async insertArtifactAsync(record: ArtifactRecord): Promise<void> {
-    this.artifacts.set(record.artifactId, record);
     await this.executeDirect(
       `insertArtifact:${record.artifactId}`,
       `INSERT INTO ${this.table("artifacts")} (
@@ -1837,16 +1791,9 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async listArtifactsForBuildAsync(buildId: string): Promise<ArtifactRecord[]> {
-    const records = await this.selectManyByClauses<ArtifactRecord>(
-      "artifacts",
-      ["build_id = $1"],
-      [buildId],
-      { orderBy: "created_at ASC" },
-    );
-    for (const record of records) {
-      this.artifacts.set(record.artifactId, record);
-    }
-    return records;
+    return this.selectManyByClauses<ArtifactRecord>("artifacts", ["build_id = $1"], [buildId], {
+      orderBy: "created_at ASC",
+    });
   }
 
   deleteArtifacts(_artifactIds: string[]): number {
@@ -1857,27 +1804,17 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     if (artifactIds.length === 0) {
       return 0;
     }
-    let deleted = 0;
-    for (const artifactId of artifactIds) {
-      if (this.artifacts.delete(artifactId)) {
-        deleted += 1;
-      }
-    }
-    await this.executeDirect(
-      `deleteArtifacts:${artifactIds.length}`,
-      `DELETE FROM ${this.table("artifacts")} WHERE artifact_id = ANY($1::text[])`,
+    const rows = await this.getClient().unsafe(
+      `DELETE FROM ${this.table("artifacts")}
+       WHERE artifact_id = ANY($1::text[])
+       RETURNING artifact_id`,
       [artifactIds],
     );
-    return deleted;
-  }
-
-  upsertChannelState(_record: ChannelStateRecord): void {
-    this.assertSyncMethodUnsupported("upsertChannelState");
+    return rows.length;
   }
 
   async upsertChannelStateAsync(record: ChannelStateRecord): Promise<void> {
     const stateKey = this.channelStateKey(record.projectKey, record.environment, record.channel);
-    this.channelStates.set(stateKey, record);
     await this.executeDirect(
       `upsertChannelState:${stateKey}`,
       `INSERT INTO ${this.table("channel_state")} (
@@ -1910,15 +1847,11 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     environment: string,
     channel: string,
   ): Promise<ChannelStateRecord | null> {
-    const record = await this.selectSingleByField<ChannelStateRecord>(
+    return this.selectSingleByField<ChannelStateRecord>(
       "channel_state",
       "state_key",
       this.channelStateKey(projectKey, environment, channel),
     );
-    if (record) {
-      this.channelStates.set(this.channelStateKey(projectKey, environment, channel), record);
-    }
-    return record;
   }
 
   insertReleaseRelation(_record: ReleaseRelationRecord): void {
@@ -1926,7 +1859,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async insertReleaseRelationAsync(record: ReleaseRelationRecord): Promise<void> {
-    this.releaseRelations.set(record.relationId, record);
     await this.executeDirect(
       `insertReleaseRelation:${record.relationId}`,
       `INSERT INTO ${this.table("release_relations")} (
@@ -1953,16 +1885,12 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     projectKey: string,
     releaseId: string,
   ): Promise<ReleaseRelationRecord[]> {
-    const records = await this.selectManyByClauses<ReleaseRelationRecord>(
+    return this.selectManyByClauses<ReleaseRelationRecord>(
       "release_relations",
       ["project_key = $1", "(from_release_id = $2 OR to_release_id = $3)"],
       [projectKey, releaseId, releaseId],
       { orderBy: "created_at ASC" },
     );
-    for (const record of records) {
-      this.releaseRelations.set(record.relationId, record);
-    }
-    return records;
   }
 
   listReleaseRelationsByType(
@@ -1978,7 +1906,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     relationType: string,
     limit?: number,
   ): Promise<ReleaseRelationRecord[]> {
-    const records = await this.selectManyByClauses<ReleaseRelationRecord>(
+    return this.selectManyByClauses<ReleaseRelationRecord>(
       "release_relations",
       ["project_key = $1", "relation_type = $2"],
       [projectKey, relationType],
@@ -1987,10 +1915,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
         limit,
       },
     );
-    for (const record of records) {
-      this.releaseRelations.set(record.relationId, record);
-    }
-    return records;
   }
 
   upsertBuildProvenance(_record: BuildProvenanceRecord): void {
@@ -1998,7 +1922,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async upsertBuildProvenanceAsync(record: BuildProvenanceRecord): Promise<void> {
-    this.buildProvenance.set(record.buildId, record);
     await this.executeDirect(
       `upsertBuildProvenance:${record.buildId}`,
       `INSERT INTO ${this.table("build_provenance")} (
@@ -2024,15 +1947,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async getBuildProvenanceAsync(buildId: string): Promise<BuildProvenanceRecord | null> {
-    const record = await this.selectSingleByField<BuildProvenanceRecord>(
-      "build_provenance",
-      "build_id",
-      buildId,
-    );
-    if (record) {
-      this.buildProvenance.set(record.buildId, record);
-    }
-    return record;
+    return this.selectSingleByField<BuildProvenanceRecord>("build_provenance", "build_id", buildId);
   }
 
   listReleaseProvenance(_releaseId: string): BuildProvenanceRecord[] {
@@ -2040,16 +1955,12 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async listReleaseProvenanceAsync(releaseId: string): Promise<BuildProvenanceRecord[]> {
-    const records = await this.selectManyByClauses<BuildProvenanceRecord>(
+    return this.selectManyByClauses<BuildProvenanceRecord>(
       "build_provenance",
       ["release_id = $1"],
       [releaseId],
       { orderBy: "captured_at DESC" },
     );
-    for (const record of records) {
-      this.buildProvenance.set(record.buildId, record);
-    }
-    return records;
   }
 
   upsertRollback(_record: RollbackOperationRecord): void {
@@ -2057,7 +1968,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async upsertRollbackAsync(record: RollbackOperationRecord): Promise<void> {
-    this.rollbacks.set(record.rollbackId, record);
     await this.executeDirect(
       `upsertRollback:${record.rollbackId}`,
       `INSERT INTO ${this.table("rollback_operations")} (
@@ -2084,15 +1994,11 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async getRollbackAsync(rollbackId: string): Promise<RollbackOperationRecord | null> {
-    const record = await this.selectSingleByField<RollbackOperationRecord>(
+    return this.selectSingleByField<RollbackOperationRecord>(
       "rollback_operations",
       "rollback_id",
       rollbackId,
     );
-    if (record) {
-      this.rollbacks.set(record.rollbackId, record);
-    }
-    return record;
   }
 
   listRollbacks(_params: {
@@ -2120,16 +2026,15 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
       values.push(params.channel);
       clauses.push(`channel = $${values.length}`);
     }
-    const records = await this.selectManyByClauses<RollbackOperationRecord>(
+    return this.selectManyByClauses<RollbackOperationRecord>(
       "rollback_operations",
       clauses,
       values,
-      { orderBy: "updated_at DESC", limit: params.limit },
+      {
+        orderBy: "updated_at DESC",
+        limit: params.limit,
+      },
     );
-    for (const record of records) {
-      this.rollbacks.set(record.rollbackId, record);
-    }
-    return records;
   }
 
   upsertRollout(_record: RolloutRecord): void {
@@ -2137,7 +2042,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async upsertRolloutAsync(record: RolloutRecord): Promise<void> {
-    this.rollouts.set(record.rolloutId, record);
     await this.executeDirect(
       `upsertRollout:${record.rolloutId}`,
       `INSERT INTO ${this.table("rollouts")} (
@@ -2165,15 +2069,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async getRolloutAsync(rolloutId: string): Promise<RolloutRecord | null> {
-    const record = await this.selectSingleByField<RolloutRecord>(
-      "rollouts",
-      "rollout_id",
-      rolloutId,
-    );
-    if (record) {
-      this.rollouts.set(record.rolloutId, record);
-    }
-    return record;
+    return this.selectSingleByField<RolloutRecord>("rollouts", "rollout_id", rolloutId);
   }
 
   listRollouts(_params: {
@@ -2213,14 +2109,10 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
       values.push(params.statuses);
       clauses.push(`status = ANY($${values.length}::text[])`);
     }
-    const records = await this.selectManyByClauses<RolloutRecord>("rollouts", clauses, values, {
+    return this.selectManyByClauses<RolloutRecord>("rollouts", clauses, values, {
       orderBy: "updated_at DESC",
       limit: params.limit,
     });
-    for (const record of records) {
-      this.rollouts.set(record.rolloutId, record);
-    }
-    return records;
   }
 
   insertEvent(_record: EventLogRecord): void {
@@ -2263,14 +2155,10 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
       values.push(`${params.eventTypePrefix}%`);
       clauses.push(`event_type LIKE $${values.length}`);
     }
-    const records = await this.selectManyByClauses<EventLogRecord>("event_logs", clauses, values, {
+    return this.selectManyByClauses<EventLogRecord>("event_logs", clauses, values, {
       orderBy: "created_at DESC",
       limit: params.limit,
     });
-    for (const record of records) {
-      this.events.set(record.eventId, record);
-    }
-    return records;
   }
 
   getIdempotencyReceipt(_scope: string, _idempotencyKey: string): IdempotencyReceiptRecord | null {
@@ -2281,15 +2169,11 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     scope: string,
     idempotencyKey: string,
   ): Promise<IdempotencyReceiptRecord | null> {
-    const record = await this.selectSingleByField<IdempotencyReceiptRecord>(
+    return this.selectSingleByField<IdempotencyReceiptRecord>(
       "idempotency_receipts",
       "receipt_key",
       `${scope}:${idempotencyKey}`,
     );
-    if (record) {
-      this.idempotencyReceipts.set(record.receiptKey, record);
-    }
-    return record;
   }
 
   upsertIdempotencyReceipt(_record: IdempotencyReceiptRecord): void {
@@ -2297,7 +2181,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async upsertIdempotencyReceiptAsync(record: IdempotencyReceiptRecord): Promise<void> {
-    this.idempotencyReceipts.set(record.receiptKey, record);
     await this.executeDirect(
       `upsertIdempotencyReceipt:${record.receiptKey}`,
       `INSERT INTO ${this.table("idempotency_receipts")} (
@@ -2315,23 +2198,10 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async purgeExpiredCallbackNoncesAsync(now = nowIso()): Promise<void> {
-    await this.waitForPendingWrites();
-    const rows = await this.getClient().unsafe(
-      `SELECT record_json FROM ${this.table("callback_nonces")} WHERE expires_at <= $1`,
-      [now],
-    );
-    const expired = rows
-      .map((row) => parsePostgresJson<CallbackNonceRecord>(row.record_json))
-      .filter((record): record is CallbackNonceRecord => Boolean(record));
-    if (expired.length === 0) {
-      return;
-    }
-    const expiredKeys = expired.map((record) => record.nonceKey);
-    this.removeMany(expiredKeys, this.callbackNonces);
     await this.executeDirect(
-      `purgeExpiredCallbackNonces:${expiredKeys.length}`,
-      `DELETE FROM ${this.table("callback_nonces")} WHERE nonce_key = ANY($1::text[])`,
-      [expiredKeys],
+      `purgeExpiredCallbackNonces:${now}`,
+      `DELETE FROM ${this.table("callback_nonces")} WHERE expires_at <= $1`,
+      [now],
     );
   }
 
@@ -2362,7 +2232,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     if (!inserted) {
       return false;
     }
-    this.callbackNonces.set(record.nonceKey, record);
     return true;
   }
 
@@ -2405,7 +2274,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
       );
       return parsePostgresJson<NotificationOutboxRecord>(existingRows[0]?.record_json) ?? record;
     });
-    this.notifications.set(inserted.notificationId, inserted);
     return inserted;
   }
 
@@ -2436,7 +2304,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
         JSON.stringify(record),
       ],
     );
-    this.notifications.set(record.notificationId, record);
   }
 
   getNotification(_notificationId: string): NotificationOutboxRecord | null {
@@ -2444,15 +2311,11 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async getNotificationAsync(notificationId: string): Promise<NotificationOutboxRecord | null> {
-    const record = await this.selectSingleByField<NotificationOutboxRecord>(
+    return this.selectSingleByField<NotificationOutboxRecord>(
       "notification_outbox",
       "notification_id",
       notificationId,
     );
-    if (record) {
-      this.notifications.set(record.notificationId, record);
-    }
-    return record;
   }
 
   getNotificationByDedupeKey(
@@ -2472,11 +2335,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
        LIMIT 1`,
       [deliveryChannel, dedupeKey],
     );
-    const record = parsePostgresJson<NotificationOutboxRecord>(rows[0]?.record_json);
-    if (record) {
-      this.notifications.set(record.notificationId, record);
-    }
-    return record ?? null;
+    return parsePostgresJson<NotificationOutboxRecord>(rows[0]?.record_json) ?? null;
   }
 
   listNotifications(_params?: {
@@ -2502,7 +2361,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
       values.push(params.statuses);
       clauses.push(`status = ANY($${values.length}::text[])`);
     }
-    const records = await this.selectManyByClauses<NotificationOutboxRecord>(
+    return this.selectManyByClauses<NotificationOutboxRecord>(
       "notification_outbox",
       clauses,
       values,
@@ -2511,10 +2370,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
         limit: params?.limit,
       },
     );
-    for (const record of records) {
-      this.notifications.set(record.notificationId, record);
-    }
-    return records;
   }
 
   purgeNotifications(_params: {
@@ -2535,23 +2390,12 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
       clauses.push(`status = ANY($${values.length}::text[])`);
     }
     const rows = await this.getClient().unsafe(
-      `SELECT record_json FROM ${this.table("notification_outbox")} WHERE ${clauses.join(" AND ")}`,
+      `DELETE FROM ${this.table("notification_outbox")}
+       WHERE ${clauses.join(" AND ")}
+       RETURNING notification_id`,
       values,
     );
-    const deletedIds = rows
-      .map((row) => parsePostgresJson<NotificationOutboxRecord>(row.record_json))
-      .filter((record): record is NotificationOutboxRecord => Boolean(record))
-      .map((record) => record.notificationId);
-    this.removeMany(deletedIds, this.notifications);
-    if (deletedIds.length === 0) {
-      return 0;
-    }
-    await this.executeDirect(
-      `purgeNotifications:${deletedIds.length}`,
-      `DELETE FROM ${this.table("notification_outbox")} WHERE notification_id = ANY($1::text[])`,
-      [deletedIds],
-    );
-    return deletedIds.length;
+    return rows.length;
   }
 
   upsertBaseline(_record: BaselineRecord): void {
@@ -2559,7 +2403,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async upsertBaselineAsync(record: BaselineRecord): Promise<void> {
-    this.baselines.set(record.baselineId, record);
     await this.executeDirect(
       `upsertBaseline:${record.baselineId}`,
       `INSERT INTO ${this.table("patch_baselines")} (
@@ -2593,16 +2436,12 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     channel: string;
     platform: string;
   }): Promise<BaselineRecord[]> {
-    const records = await this.selectManyByClauses<BaselineRecord>(
+    return this.selectManyByClauses<BaselineRecord>(
       "patch_baselines",
       ["project_key = $1", "environment = $2", "channel = $3", "platform = $4"],
       [params.projectKey, params.environment, params.channel, params.platform],
       { orderBy: "created_at DESC" },
     );
-    for (const record of records) {
-      this.baselines.set(record.baselineId, record);
-    }
-    return records;
   }
 
   purgeEvents(_before: string): number {
@@ -2611,44 +2450,22 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
 
   async purgeEventsAsync(before: string): Promise<number> {
     const rows = await this.getClient().unsafe(
-      `SELECT record_json FROM ${this.table("event_logs")} WHERE created_at <= $1`,
+      `DELETE FROM ${this.table("event_logs")}
+       WHERE created_at <= $1
+       RETURNING event_id`,
       [before],
     );
-    const deletedIds = rows
-      .map((row) => parsePostgresJson<EventLogRecord>(row.record_json))
-      .filter((record): record is EventLogRecord => Boolean(record))
-      .map((record) => record.eventId);
-    this.removeMany(deletedIds, this.events);
-    if (deletedIds.length === 0) {
-      return 0;
-    }
-    await this.executeDirect(
-      `purgeEvents:${deletedIds.length}`,
-      `DELETE FROM ${this.table("event_logs")} WHERE event_id = ANY($1::text[])`,
-      [deletedIds],
-    );
-    return deletedIds.length;
+    return rows.length;
   }
 
   async purgeIdempotencyReceiptsAsync(before: string): Promise<number> {
     const rows = await this.getClient().unsafe(
-      `SELECT record_json FROM ${this.table("idempotency_receipts")} WHERE updated_at <= $1`,
+      `DELETE FROM ${this.table("idempotency_receipts")}
+       WHERE updated_at <= $1
+       RETURNING receipt_key`,
       [before],
     );
-    const expiredKeys = rows
-      .map((row) => parsePostgresJson<IdempotencyReceiptRecord>(row.record_json))
-      .filter((record): record is IdempotencyReceiptRecord => Boolean(record))
-      .map((record) => record.receiptKey);
-    this.removeMany(expiredKeys, this.idempotencyReceipts);
-    if (expiredKeys.length === 0) {
-      return 0;
-    }
-    await this.executeDirect(
-      `purgeIdempotencyReceipts:${expiredKeys.length}`,
-      `DELETE FROM ${this.table("idempotency_receipts")} WHERE receipt_key = ANY($1::text[])`,
-      [expiredKeys],
-    );
-    return expiredKeys.length;
+    return rows.length;
   }
 
   acquireLock(
@@ -2693,10 +2510,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
       return { ok: true as const };
     });
     if (result.ok) {
-      this.locks.set(record.lockKey, record);
       return { ok: true };
     }
-    this.locks.set(result.lock.lockKey, result.lock);
     return result;
   }
 
@@ -2705,7 +2520,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async releaseLockAsync(lockKey: string): Promise<void> {
-    this.locks.delete(lockKey);
     await this.executeDirect(
       `releaseLock:${lockKey}`,
       `DELETE FROM ${this.table("operation_locks")} WHERE lock_key = $1`,
@@ -2719,23 +2533,10 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
 
   async purgeExpiredLocksAsync(): Promise<void> {
     const now = nowIso();
-    await this.waitForPendingWrites();
-    const rows = await this.getClient().unsafe(
-      `SELECT record_json FROM ${this.table("operation_locks")} WHERE expires_at <= $1`,
-      [now],
-    );
-    const expired = rows
-      .map((row) => parsePostgresJson<OperationLockRecord>(row.record_json))
-      .filter((record): record is OperationLockRecord => Boolean(record));
-    if (expired.length === 0) {
-      return;
-    }
-    const expiredKeys = expired.map((record) => record.lockKey);
-    this.removeMany(expiredKeys, this.locks);
     await this.executeDirect(
-      `purgeExpiredLocks:${expiredKeys.length}`,
-      `DELETE FROM ${this.table("operation_locks")} WHERE lock_key = ANY($1::text[])`,
-      [expiredKeys],
+      `purgeExpiredLocks:${now}`,
+      `DELETE FROM ${this.table("operation_locks")} WHERE expires_at <= $1`,
+      [now],
     );
   }
 
@@ -2826,12 +2627,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     throw new Error(
       `lobster-release postgres store requires async direct-store access for ${method}; use the Async variant instead`,
     );
-  }
-
-  private removeMany<T>(keys: string[], cache: Map<string, T>): void {
-    for (const key of keys) {
-      cache.delete(key);
-    }
   }
 
   private async bootstrapSchema(): Promise<void> {

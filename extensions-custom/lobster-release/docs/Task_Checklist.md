@@ -172,7 +172,7 @@
 - [x] 将核心 `release/create + CI callback + approve` 主路径推进为兼容 PostgreSQL 的异步调用
 - [x] 将剩余 `rollout / rollback / promote / maintenance` 主路径继续推进为兼容 PostgreSQL 的异步调用
 - [x] 将常用查询与通知辅助入口（`store status / route resolve / build status / current / stable / promotions / history / rollback plan / rollback audit / graph / provenance / baselines / notes / preflight / notification helpers`）推进为兼容 PostgreSQL 的异步调用
-- [ ] 将 `PostgreSQL` store 从第一阶段 cache 模式升级为全异步直连实现
+- [x] 将 `PostgreSQL` store 从第一阶段 cache 模式升级为全异步直连实现
 - [x] 实现 `PostgreSQL` migration / bootstrap
 - [x] 实现 `SQLite -> PostgreSQL` 数据迁移脚本
 - [x] 支持通过配置切换数据库驱动
@@ -244,21 +244,17 @@
 - [x] 实现 rollout 自动巡检入口
 - [x] 将 `tick_all` 接入真正的定时任务
 - [x] 将 `gamexpert` gray policy 固化为正式配置
-- [ ] 设计版本与运营数据联动入口
+- [x] 确认第一阶段暂不接入正式运营数据，仅保留 rollout observation / monitoring 输入接口
 - [x] 设计定时构建或夜间构建能力
 - [x] 设计自动验证或自动 smoke 流程
 
 ## 15. 服务骨架与代码结构
 
-- [ ] 创建 `src/` 目录
-- [ ] 创建 `src/server/`
-- [ ] 创建 `src/domain/`
-- [ ] 创建 `src/storage/`
-- [ ] 创建 `src/openclaw/`
 - [x] 创建 `package.json`
 - [x] 创建 `openclaw.plugin.json` 或服务配置文件
 - [x] 创建环境变量示例文件
 - [x] 创建本地开发启动脚本
+- [x] 确认第一阶段保持 `extensions-custom/lobster-release` 插件目录实现，不额外拆分 `src/server / src/domain / src/storage / src/openclaw` 骨架
 
 ## 16. 测试
 

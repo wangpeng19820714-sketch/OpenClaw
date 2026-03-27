@@ -183,10 +183,10 @@ This document records the current live integration status of `lobster-release`, 
       - `POST /projects/:projectKey/channels/:channel/rollback`
       - `POST /projects/:projectKey/rollbacks/:rollbackId/approve`
       - `POST /projects/:projectKey/maintenance/run`
-  - PostgreSQL is not production-complete yet:
+  - PostgreSQL direct-store path is now in place for the release center:
     - the primary release, CI, rollout, rollback, maintenance, manifest, and query paths now run through async direct-store reads and writes
     - synchronous compatibility helpers still exist for the SQLite path and a small set of legacy in-process callers
-    - `PostgresLobsterReleaseStore` is still a hybrid implementation because those compatibility entry points keep an in-memory mirror alive
+    - `PostgresLobsterReleaseStore` no longer depends on an in-memory mirror for normal handler or tool flows
   - PostgreSQL core reliability writes now use direct transactional paths where correctness matters most:
     - channel lock acquisition
     - callback nonce claim
@@ -214,6 +214,10 @@ This document records the current live integration status of `lobster-release`, 
   - project policy can set `grayRelease.monitoring.tickCron`
   - `lobster-release` arms cron-based startup timers and executes `tickAllRollouts(...)` directly
   - scheduled rollout inspection does not depend on LLM execution or agent prompts
+- Operating data ingestion remains intentionally out of scope for phase one.
+  - rollout observation and monitoring inputs are implemented
+  - no formal BI, analytics, or live operations data pipeline is wired yet
+  - this is a product decision, not a missing blocker for the release-center core
 - API integration skeleton is now implemented and validated locally.
   - HTTP tests cover project catalog, gray plan, release creation, release graph, callback nonce replay rejection, store status, and maintenance endpoints
 - Local operator workflow now has a dedicated dev start entrypoint.
