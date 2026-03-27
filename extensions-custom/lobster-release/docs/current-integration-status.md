@@ -34,6 +34,10 @@ This document records the current live integration status of `lobster-release`, 
   - callback routes are rate limited per route and remote address
   - failed callback execution now records `callback.failed` audit events
   - retryable callback failures now return a `Retry-After` hint to upstream callers
+- Artifact publish now enforces integrity and naming rules.
+  - locally accessible artifacts are re-hashed and compared against reported SHA-256
+  - versioned release artifacts must include the release version
+  - versioned release artifacts must include Jenkins build number when one exists
 - Publish now runs a smoke gate that blocks missing required artifacts before a build can advance to `uploaded`.
 - Patch publish now checks patch compatibility metadata when it is present in the uploaded manifest schema.
 - Jenkins callback provenance now reuses the trigger-created build instead of creating a duplicate build.

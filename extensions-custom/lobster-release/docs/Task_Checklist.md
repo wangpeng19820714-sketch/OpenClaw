@@ -146,9 +146,9 @@
 - [x] 定义 artifact type 枚举
 - [x] 实现 `uploaded_artifacts.json` 到内部 artifact 结构的映射
 - [x] 实现统一下载 URL 生成规则
-- [ ] 实现 SHA-256 校验逻辑
+- [x] 实现 SHA-256 校验逻辑
 - [x] 实现产物去重逻辑
-- [ ] 实现统一产物命名规范
+- [x] 实现统一产物命名规范
 - [x] 实现 artifact 不可变规则
 - [x] 实现 release 级 manifest 生成
 - [x] 实现 patch 产物与 baseline 的关联记录

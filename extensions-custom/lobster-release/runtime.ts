@@ -1709,6 +1709,62 @@ export class LobsterReleaseRuntime {
     return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
   }
 
+  private async hashArtifactFileSha256(filePath: string): Promise<string> {
+    const body = await fs.readFile(filePath);
+    return crypto.createHash("sha256").update(body).digest("hex");
+  }
+
+  private artifactRequiresVersionedName(artifact: ArtifactRecord): boolean {
+    return (
+      artifact.artifactType === "android_apk" ||
+      artifact.artifactType === "android_aab" ||
+      artifact.artifactType === "macos_zip" ||
+      (artifact.artifactType === "patch_bundle" && artifact.fileName.toLowerCase().endsWith(".zip"))
+    );
+  }
+
+  private async validateArtifactIntegrity(
+    release: ReleaseRecord,
+    build: BuildRecord,
+    artifacts: ArtifactRecord[],
+  ): Promise<Record<string, unknown>> {
+    const warnings: string[] = [];
+    const errors: string[] = [];
+    let validatedSha256Count = 0;
+    let skippedSha256Count = 0;
+    for (const artifact of artifacts) {
+      const fileName = artifact.fileName.toLowerCase();
+      if (this.artifactRequiresVersionedName(artifact)) {
+        if (!fileName.includes(release.version.toLowerCase())) {
+          errors.push(`artifact naming missing version token: ${artifact.fileName}`);
+        }
+        if (
+          build.jenkinsBuildNumber &&
+          !new RegExp(`(^|[._-])${build.jenkinsBuildNumber}([._-]|$)`).test(fileName)
+        ) {
+          errors.push(`artifact naming missing build number: ${artifact.fileName}`);
+        }
+      }
+      const filePath = await this.resolveArtifactFilePath(artifact);
+      if (!filePath) {
+        skippedSha256Count += 1;
+        warnings.push(`sha256 validation skipped: ${artifact.fileName}`);
+        continue;
+      }
+      const actualSha256 = await this.hashArtifactFileSha256(filePath);
+      validatedSha256Count += 1;
+      if (actualSha256 !== artifact.sha256) {
+        errors.push(`artifact sha256 mismatch: ${artifact.fileName}`);
+      }
+    }
+    return {
+      validatedSha256Count,
+      skippedSha256Count,
+      warnings,
+      errors,
+    };
+  }
+
   private normalizePatchItemPath(rawPath: string): string {
     return rawPath
       .trim()
@@ -2509,12 +2565,24 @@ export class LobsterReleaseRuntime {
     }
     const allArtifacts = this.store.listArtifactsForBuild(buildId);
     const patchValidation = await this.validatePatchArtifacts(release, build, allArtifacts);
+    const artifactIntegrity = await this.validateArtifactIntegrity(release, build, allArtifacts);
     const smokeGate = this.evaluatePublishSmokeGate(release, build, allArtifacts, patchValidation);
     const nextReports = {
       ...build.reports,
+      artifactIntegrity,
       ...(patchValidation ? { patchValidation } : {}),
       smokeGate,
     };
+    if (((artifactIntegrity.errors as string[] | undefined) ?? []).length > 0) {
+      this.store.upsertBuild({
+        ...build,
+        reports: nextReports,
+        updatedAt: nowIso(),
+      });
+      throw new Error(
+        `artifact integrity validation failed: ${(artifactIntegrity.errors as string[]).join("; ")}`,
+      );
+    }
     if (smokeGate.passed !== true) {
       this.store.upsertBuild({
         ...build,
