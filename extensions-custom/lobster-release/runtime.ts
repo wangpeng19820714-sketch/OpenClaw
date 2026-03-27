@@ -4,7 +4,7 @@ import path from "node:path";
 import type { PluginLogger } from "openclaw/plugin-sdk/lobster";
 import { computeNextRunAtMs } from "../../src/cron/schedule.js";
 import type { LobsterReleaseConfig, LobsterReleaseProjectPolicy } from "./config.js";
-import { LobsterReleaseStore } from "./store.js";
+import type { LobsterReleaseStoreApi } from "./store.js";
 import type {
   ArtifactRecord,
   BaselineRecord,
@@ -113,7 +113,7 @@ export class LobsterReleaseRuntime {
   private schedulerEnabled = false;
 
   constructor(
-    private readonly store: LobsterReleaseStore,
+    private readonly store: LobsterReleaseStoreApi,
     private readonly config: LobsterReleaseConfig,
     private readonly logger: PluginLogger,
     private readonly stateDir: string,
@@ -154,6 +154,26 @@ export class LobsterReleaseRuntime {
     return project;
   }
 
+  private async ensureProjectAsync(projectKey: string): Promise<ProjectRecord> {
+    const existing = await this.store.getProjectAsync(projectKey);
+    if (existing) {
+      return existing;
+    }
+    const policy = this.getProjectPolicy(projectKey);
+    const now = nowIso();
+    const project: ProjectRecord = {
+      projectId: createId("prj"),
+      projectKey,
+      name: policy.name ?? projectKey,
+      engine: policy.engine ?? "godot",
+      defaultChannel: policy.defaultChannel ?? "dev",
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.store.upsertProjectAsync(project);
+    return project;
+  }
+
   private channelLockKey(projectKey: string, environment: string, channel: string): string {
     return `${projectKey}:${environment}:channel:${channel}`;
   }
@@ -185,8 +205,43 @@ export class LobsterReleaseRuntime {
     }
   }
 
+  private async acquireChannelLockAsync(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    owner: string;
+    reason: string;
+  }): Promise<void> {
+    await this.store.purgeExpiredLocksAsync();
+    const lock = await this.store.acquireLockAsync({
+      lockId: createId("lock"),
+      projectId: params.projectKey,
+      projectKey: params.projectKey,
+      environment: params.environment,
+      lockScope: "channel",
+      lockKey: this.channelLockKey(params.projectKey, params.environment, params.channel),
+      owner: params.owner,
+      reason: params.reason,
+      createdAt: nowIso(),
+      expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+    });
+    if (!lock.ok) {
+      throw new Error(
+        `channel lock conflict: ${params.projectKey}/${params.environment}/${params.channel}`,
+      );
+    }
+  }
+
   private releaseChannelLock(projectKey: string, environment: string, channel: string): void {
     this.store.releaseLock(this.channelLockKey(projectKey, environment, channel));
+  }
+
+  private async releaseChannelLockAsync(
+    projectKey: string,
+    environment: string,
+    channel: string,
+  ): Promise<void> {
+    await this.store.releaseLockAsync(this.channelLockKey(projectKey, environment, channel));
   }
 
   private recordEvent(params: Omit<EventLogRecord, "eventId" | "createdAt">): EventLogRecord {
@@ -196,6 +251,18 @@ export class LobsterReleaseRuntime {
       createdAt: nowIso(),
     };
     this.store.insertEvent(event);
+    return event;
+  }
+
+  private async recordEventAsync(
+    params: Omit<EventLogRecord, "eventId" | "createdAt">,
+  ): Promise<EventLogRecord> {
+    const event = {
+      ...params,
+      eventId: createId("evt"),
+      createdAt: nowIso(),
+    };
+    await this.store.insertEventAsync(event);
     return event;
   }
 
@@ -229,6 +296,40 @@ export class LobsterReleaseRuntime {
     };
     this.store.insertNotification(record);
     return this.store.getNotificationByDedupeKey(deliveryChannel, params.dedupeKey) ?? record;
+  }
+
+  private async queueNotificationAsync(params: {
+    event: EventLogRecord;
+    dedupeKey: string;
+    payload: Record<string, unknown>;
+    deliveryChannel?: NotificationOutboxRecord["deliveryChannel"];
+  }): Promise<NotificationOutboxRecord> {
+    const deliveryChannel = params.deliveryChannel ?? "feishu";
+    const existing = await this.store.getNotificationByDedupeKeyAsync(
+      deliveryChannel,
+      params.dedupeKey,
+    );
+    if (existing) {
+      return existing;
+    }
+    const now = nowIso();
+    const record: NotificationOutboxRecord = {
+      notificationId: createId("ntf"),
+      eventId: params.event.eventId,
+      projectId: params.event.projectId,
+      projectKey: params.event.projectKey,
+      environment: params.event.environment,
+      channel: (params.payload.channel as ReleaseChannel | undefined) ?? undefined,
+      eventType: params.event.eventType,
+      deliveryChannel,
+      status: "pending",
+      dedupeKey: params.dedupeKey,
+      payload: params.payload,
+      attemptCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    return this.store.insertNotificationAsync(record);
   }
 
   private buildRolloutNotificationPayload(params: {
@@ -316,8 +417,47 @@ export class LobsterReleaseRuntime {
     });
   }
 
+  private async queueRolloutNotificationAsync(params: {
+    event: EventLogRecord;
+    dedupeKey: string;
+    rollout: RolloutRecord;
+    release?: ReleaseRecord | null;
+    summary: string;
+    reason?: string;
+    action?: string;
+    status?: RolloutHealthStatus;
+  }): Promise<NotificationOutboxRecord> {
+    return this.queueNotificationAsync({
+      event: params.event,
+      dedupeKey: params.dedupeKey,
+      payload: this.buildRolloutNotificationPayload({
+        rollout: params.rollout,
+        release: params.release,
+        summary: params.summary,
+        reason: params.reason,
+        action: params.action,
+        status: params.status,
+      }),
+    });
+  }
+
   getIdempotencyReceipt(scope: string, idempotencyKey: string): StoredIdempotencyResponse | null {
     const record = this.store.getIdempotencyReceipt(scope, idempotencyKey);
+    if (!record) {
+      return null;
+    }
+    return {
+      statusCode: record.statusCode,
+      responseBody: record.responseBody,
+      requestHash: record.requestHash,
+    };
+  }
+
+  async getIdempotencyReceiptAsync(
+    scope: string,
+    idempotencyKey: string,
+  ): Promise<StoredIdempotencyResponse | null> {
+    const record = await this.store.getIdempotencyReceiptAsync(scope, idempotencyKey);
     if (!record) {
       return null;
     }
@@ -337,6 +477,26 @@ export class LobsterReleaseRuntime {
   ): void {
     const now = nowIso();
     this.store.upsertIdempotencyReceipt({
+      receiptKey: `${scope}:${idempotencyKey}`,
+      scope,
+      idempotencyKey,
+      requestHash,
+      statusCode,
+      responseBody,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  async recordIdempotencyReceiptAsync(
+    scope: string,
+    idempotencyKey: string,
+    requestHash: string,
+    statusCode: number,
+    responseBody: unknown,
+  ): Promise<void> {
+    const now = nowIso();
+    await this.store.upsertIdempotencyReceiptAsync({
       receiptKey: `${scope}:${idempotencyKey}`,
       scope,
       idempotencyKey,
@@ -616,6 +776,22 @@ export class LobsterReleaseRuntime {
       .filter((rollout) => MANAGED_ROLLOUT_STATUSES.has(rollout.status));
   }
 
+  private async activeRolloutsForChannelAsync(
+    projectKey: string,
+    environment: ReleaseEnvironment,
+    channel: ReleaseChannel,
+  ): Promise<RolloutRecord[]> {
+    return (
+      await this.store.listRolloutsAsync({
+        projectKey,
+        environment,
+        channel,
+        statuses: [...MANAGED_ROLLOUT_STATUSES],
+        limit: 100,
+      })
+    ).filter((rollout) => MANAGED_ROLLOUT_STATUSES.has(rollout.status));
+  }
+
   private assertNoConflictingRollout(params: {
     projectKey: string;
     environment: ReleaseEnvironment;
@@ -646,11 +822,58 @@ export class LobsterReleaseRuntime {
     }
   }
 
+  private async assertNoConflictingRolloutAsync(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    region?: string;
+    audience?: string;
+    releaseId?: string;
+  }): Promise<void> {
+    const region = this.normalizeOptionalScopeValue(params.region);
+    const audience = this.normalizeOptionalScopeValue(params.audience);
+    const conflict = (
+      await this.activeRolloutsForChannelAsync(
+        params.projectKey,
+        params.environment,
+        params.channel,
+      )
+    ).find((rollout) => {
+      if (params.releaseId && rollout.releaseId === params.releaseId) {
+        return false;
+      }
+      return (
+        this.normalizeOptionalScopeValue(rollout.scope.region) === region &&
+        this.normalizeOptionalScopeValue(rollout.scope.audience) === audience
+      );
+    });
+    if (conflict) {
+      throw new Error(
+        `rollout.scope_conflict: ${params.projectKey}/${params.environment}/${params.channel} already has active rollout ${conflict.rolloutId} for scope ${region ?? "*"}:${audience ?? "*"}`,
+      );
+    }
+  }
+
   private assertNoBlockingRolloutForApproval(release: ReleaseRecord): void {
     const blocking = this.activeRolloutsForChannel(
       release.projectKey,
       release.environment,
       release.channel,
+    ).find((rollout) => rollout.releaseId === release.releaseId);
+    if (blocking) {
+      throw new Error(
+        `rollout.in_progress: approve-release blocked by rollout ${blocking.rolloutId}`,
+      );
+    }
+  }
+
+  private async assertNoBlockingRolloutForApprovalAsync(release: ReleaseRecord): Promise<void> {
+    const blocking = (
+      await this.activeRolloutsForChannelAsync(
+        release.projectKey,
+        release.environment,
+        release.channel,
+      )
     ).find((rollout) => rollout.releaseId === release.releaseId);
     if (blocking) {
       throw new Error(
@@ -704,6 +927,18 @@ export class LobsterReleaseRuntime {
 
   private listRolloutObservationEvents(rollout: RolloutRecord): EventLogRecord[] {
     return this.store.listEvents({
+      projectKey: rollout.projectKey,
+      objectType: "rollout",
+      objectId: rollout.rolloutId,
+      eventType: "rollout.observed",
+      limit: 100,
+    });
+  }
+
+  private async listRolloutObservationEventsAsync(
+    rollout: RolloutRecord,
+  ): Promise<EventLogRecord[]> {
+    return this.store.listEventsAsync({
       projectKey: rollout.projectKey,
       objectType: "rollout",
       objectId: rollout.rolloutId,
@@ -862,6 +1097,115 @@ export class LobsterReleaseRuntime {
     };
   }
 
+  private async buildRolloutHealthStatusAsync(
+    rollout: RolloutRecord,
+    options?: { publishRelease?: boolean },
+  ): Promise<RolloutHealthStatus> {
+    const thresholds = this.rolloutMonitoringPolicy(rollout.projectKey);
+    const observations = (await this.listRolloutObservationEventsAsync(rollout))
+      .map((event) => this.parseRolloutObservation(event))
+      .filter((item): item is RolloutObservationRecord => Boolean(item))
+      .toSorted((left, right) => left.observedAt.localeCompare(right.observedAt));
+    const aggregate = observations.reduce(
+      (summary, observation) => {
+        summary.sampleSize += observation.sampleSize;
+        summary.successCount += observation.successCount;
+        summary.errorCount += observation.errorCount;
+        summary.crashCount += observation.crashCount;
+        summary.latestObservedAt = observation.observedAt;
+        if (typeof observation.latencyP95Ms === "number") {
+          summary.latencyP95Ms = Math.max(summary.latencyP95Ms ?? 0, observation.latencyP95Ms);
+        }
+        return summary;
+      },
+      {
+        sampleSize: 0,
+        successCount: 0,
+        errorCount: 0,
+        crashCount: 0,
+        latestObservedAt: undefined as string | undefined,
+        latencyP95Ms: undefined as number | undefined,
+      },
+    );
+    const sampleDenominator = Math.max(aggregate.sampleSize, 1);
+    const successRate = aggregate.successCount / sampleDenominator;
+    const errorRate = aggregate.errorCount / sampleDenominator;
+    const crashRate = aggregate.crashCount / sampleDenominator;
+    const nextTrafficPercent =
+      rollout.status === "completed" || rollout.status === "canceled"
+        ? undefined
+        : this.nextRolloutTrafficPercent(rollout.projectKey, rollout.trafficPercent);
+    let health: RolloutHealthStatus["health"] = "disabled";
+    let autoAction: RolloutHealthStatus["autoAction"];
+    if (thresholds.enabled) {
+      if (aggregate.sampleSize < thresholds.minSampleSize) {
+        health = "insufficient_data";
+      } else if (
+        successRate < thresholds.minSuccessRate ||
+        errorRate > thresholds.maxErrorRate ||
+        crashRate > thresholds.maxCrashRate
+      ) {
+        health = "unhealthy";
+        autoAction = {
+          type: thresholds.circuitBreakerAction,
+          reason: `rollout health fell below threshold (success=${successRate.toFixed(3)}, error=${errorRate.toFixed(3)}, crash=${crashRate.toFixed(3)})`,
+        };
+      } else {
+        health = "healthy";
+        const observedAt = aggregate.latestObservedAt ?? rollout.updatedAt;
+        const elapsedMinutes = this.minutesBetween(observedAt, nowIso());
+        if (
+          thresholds.autoAdvance &&
+          rollout.status === "active" &&
+          elapsedMinutes >= thresholds.autoAdvanceAfterMinutes
+        ) {
+          if (nextTrafficPercent && nextTrafficPercent < 100) {
+            autoAction = {
+              type: "advance",
+              trafficPercent: nextTrafficPercent,
+              reason: `healthy rollout reached auto-advance window (${elapsedMinutes}m >= ${thresholds.autoAdvanceAfterMinutes}m)`,
+            };
+          } else {
+            autoAction = {
+              type: "complete",
+              trafficPercent: 100,
+              reason: `healthy rollout completed final step (${options?.publishRelease !== false && thresholds.publishOnComplete ? "publishing release" : "manual publish pending"})`,
+            };
+          }
+        }
+      }
+    }
+    return {
+      rolloutId: rollout.rolloutId,
+      health,
+      thresholds: {
+        enabled: thresholds.enabled,
+        minSampleSize: thresholds.minSampleSize,
+        minSuccessRate: thresholds.minSuccessRate,
+        maxErrorRate: thresholds.maxErrorRate,
+        maxCrashRate: thresholds.maxCrashRate,
+        autoAdvance: thresholds.autoAdvance,
+        autoAdvanceAfterMinutes: thresholds.autoAdvanceAfterMinutes,
+        publishOnComplete: thresholds.publishOnComplete,
+        circuitBreakerAction: thresholds.circuitBreakerAction,
+      },
+      aggregate: {
+        sampleSize: aggregate.sampleSize,
+        successCount: aggregate.successCount,
+        errorCount: aggregate.errorCount,
+        crashCount: aggregate.crashCount,
+        successRate,
+        errorRate,
+        crashRate,
+        latestObservedAt: aggregate.latestObservedAt,
+        latencyP95Ms: aggregate.latencyP95Ms,
+      },
+      observations,
+      nextTrafficPercent,
+      autoAction,
+    };
+  }
+
   private rolloutBucket(subjectKey: string): number {
     const digest = sha256Text(subjectKey);
     return Number.parseInt(digest.slice(0, 8), 16) % 100;
@@ -881,6 +1225,46 @@ export class LobsterReleaseRuntime {
     const region = this.normalizeOptionalScopeValue(params.region);
     const audience = this.normalizeOptionalScopeValue(params.audience);
     return this.activeRolloutsForChannel(params.projectKey, params.environment, params.channel)
+      .filter((rollout) => ROUTABLE_ROLLOUT_STATUSES.has(rollout.status))
+      .filter((rollout) => {
+        const rolloutRegion = this.normalizeOptionalScopeValue(rollout.scope.region);
+        const rolloutAudience = this.normalizeOptionalScopeValue(rollout.scope.audience);
+        if (rolloutRegion && rolloutRegion !== region) {
+          return false;
+        }
+        if (rolloutAudience && rolloutAudience !== audience) {
+          return false;
+        }
+        return true;
+      })
+      .toSorted((left, right) => {
+        const specificityDelta = this.rolloutSpecificity(right) - this.rolloutSpecificity(left);
+        if (specificityDelta !== 0) {
+          return specificityDelta;
+        }
+        if (right.trafficPercent !== left.trafficPercent) {
+          return right.trafficPercent - left.trafficPercent;
+        }
+        return right.updatedAt.localeCompare(left.updatedAt);
+      });
+  }
+
+  private async matchingRolloutsForRouteAsync(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    region?: string;
+    audience?: string;
+  }): Promise<RolloutRecord[]> {
+    const region = this.normalizeOptionalScopeValue(params.region);
+    const audience = this.normalizeOptionalScopeValue(params.audience);
+    return (
+      await this.activeRolloutsForChannelAsync(
+        params.projectKey,
+        params.environment,
+        params.channel,
+      )
+    )
       .filter((rollout) => ROUTABLE_ROLLOUT_STATUSES.has(rollout.status))
       .filter((rollout) => {
         const rolloutRegion = this.normalizeOptionalScopeValue(rollout.scope.region);
@@ -944,10 +1328,76 @@ export class LobsterReleaseRuntime {
     return active;
   }
 
+  private async markRolloutsCanceledAsync(
+    projectKey: string,
+    environment: ReleaseEnvironment,
+    channel: ReleaseChannel,
+    operator: string,
+    reason: string,
+  ): Promise<RolloutRecord[]> {
+    const active = await this.activeRolloutsForChannelAsync(projectKey, environment, channel);
+    const now = nowIso();
+    for (const rollout of active) {
+      const canceled: RolloutRecord = {
+        ...rollout,
+        status: "canceled",
+        canceledAt: now,
+        completedAt: rollout.completedAt ?? now,
+        updatedAt: now,
+        metadata: {
+          ...asRecord(rollout.metadata),
+          canceledBy: operator,
+          canceledReason: reason,
+        },
+      };
+      await this.store.upsertRolloutAsync(canceled);
+      const canceledEvent = this.recordEvent({
+        projectId: rollout.projectId,
+        projectKey: rollout.projectKey,
+        environment: rollout.environment,
+        objectType: "rollout",
+        objectId: rollout.rolloutId,
+        eventType: "rollout.canceled",
+        payload: {
+          releaseId: rollout.releaseId,
+          reason,
+        },
+        createdBy: operator,
+      });
+      await this.queueRolloutNotificationAsync({
+        event: canceledEvent,
+        dedupeKey: `rollout.canceled:${canceled.rolloutId}:${canceled.updatedAt}`,
+        rollout: canceled,
+        release: await this.store.getReleaseAsync(canceled.releaseId),
+        summary: "Rollout canceled",
+        reason,
+        action: "cancel",
+      });
+    }
+    return active;
+  }
+
   claimCallbackNonce(scope: string, nonce: string, requestHash: string): boolean {
     this.store.purgeExpiredCallbackNonces();
     const now = Date.now();
     return this.store.claimCallbackNonce({
+      nonceKey: `${scope}:${nonce}`,
+      scope,
+      nonce,
+      requestHash,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + CALLBACK_NONCE_TTL_MS).toISOString(),
+    });
+  }
+
+  async claimCallbackNonceAsync(
+    scope: string,
+    nonce: string,
+    requestHash: string,
+  ): Promise<boolean> {
+    const now = Date.now();
+    await this.store.purgeExpiredCallbackNoncesAsync();
+    return this.store.claimCallbackNonceAsync({
       nonceKey: `${scope}:${nonce}`,
       scope,
       nonce,
@@ -1061,6 +1511,23 @@ export class LobsterReleaseRuntime {
           channel: params.channel,
         })
         .find((release) => release.version === params.version) ?? null
+    );
+  }
+
+  private async findReleaseByVersionAsync(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    version: string;
+  }): Promise<ReleaseRecord | null> {
+    return (
+      (
+        await this.store.listReleasesAsync({
+          projectKey: params.projectKey,
+          environment: params.environment,
+          channel: params.channel,
+        })
+      ).find((release) => release.version === params.version) ?? null
     );
   }
 
@@ -1302,6 +1769,65 @@ export class LobsterReleaseRuntime {
     return next;
   }
 
+  private async upsertCiProvenanceAsync(
+    build: BuildRecord,
+    request: CiBuildRequest,
+    extras?: {
+      executorNode?: string;
+      executorLabel?: string;
+    },
+  ): Promise<BuildProvenanceRecord> {
+    const current =
+      (await this.store.getBuildProvenanceAsync(build.buildId)) ?? this.createProvenance(build);
+    const environmentPatch = this.buildCiEnvironmentPatch(request.environmentInfo);
+    const parameters = {
+      ...current.parameters,
+      requestId: request.requestId,
+      pipelineUrl: request.pipelineUrl,
+      targets: request.targets ?? [],
+      baselineVersion: build.baselineVersion,
+      baselineManifestUrl: build.baselineManifestUrl,
+      ...environmentPatch.parameters,
+      ...(extras?.executorNode ? { executorNode: extras.executorNode } : {}),
+      ...(extras?.executorLabel ? { executorLabel: extras.executorLabel } : {}),
+    };
+    const next: BuildProvenanceRecord = {
+      ...current,
+      sourceGitUrl: build.sourceGitUrl,
+      sourceGitBranch: build.sourceGitBranch,
+      sourceGitCommit: build.sourceGitCommit,
+      sourceGitCommitShort: build.sourceGitCommitShort,
+      jenkinsJob: build.jenkinsJob,
+      jenkinsBuildNumber: build.jenkinsBuildNumber,
+      jenkinsQueueId: build.jenkinsQueueId,
+      baselineVersion: build.baselineVersion,
+      baselineManifestUrl: build.baselineManifestUrl,
+      pipelineUrl:
+        request.pipelineUrl ??
+        current.pipelineUrl ??
+        (build.reports?.pipelineUrl as string | undefined),
+      executorNode: extras?.executorNode ?? current.executorNode,
+      executorLabel: extras?.executorLabel ?? current.executorLabel,
+      environmentInfo: {
+        ...current.environmentInfo,
+        ...environmentPatch.environmentInfo,
+      },
+      parameters,
+      capturedAt: nowIso(),
+      provenanceHash: sha256Text(
+        JSON.stringify({
+          sourceGitCommit: build.sourceGitCommit,
+          jenkinsJob: build.jenkinsJob,
+          jenkinsBuildNumber: build.jenkinsBuildNumber,
+          baselineVersion: build.baselineVersion,
+          parameters,
+        }),
+      ),
+    };
+    await this.store.upsertBuildProvenanceAsync(next);
+    return next;
+  }
+
   private ensureCiRelease(request: CiBuildRequest): ReleaseRecord {
     const projectKey = this.normalizeCiProjectKey(request.app?.projectKey);
     const environment = this.normalizeCiEnvironment(request.app?.environment, projectKey);
@@ -1440,6 +1966,146 @@ export class LobsterReleaseRuntime {
     return { release, build };
   }
 
+  private async ensureCiReleaseAsync(request: CiBuildRequest): Promise<ReleaseRecord> {
+    const projectKey = this.normalizeCiProjectKey(request.app?.projectKey);
+    const environment = this.normalizeCiEnvironment(request.app?.environment, projectKey);
+    const channel = this.normalizeCiChannel(request.app?.channel, projectKey);
+    const version = this.versionFromCi(request);
+    this.assertProjectScope(projectKey, environment, channel, {
+      region: request.app?.region?.trim() || undefined,
+      audience: request.app?.audience?.trim() || undefined,
+    });
+    const existing = await this.findReleaseByVersionAsync({
+      projectKey,
+      environment,
+      channel,
+      version,
+    });
+    if (existing) {
+      return existing;
+    }
+    const project = await this.ensureProjectAsync(projectKey);
+    const currentState = await this.getChannelStateAsync(projectKey, environment, channel);
+    const currentRelease = currentState?.currentReleaseId
+      ? await this.store.getReleaseAsync(currentState.currentReleaseId)
+      : null;
+    const parsed = parseVersion(version);
+    const now = nowIso();
+    const release: ReleaseRecord = {
+      releaseId: createId("rel"),
+      projectId: project.projectId,
+      projectKey,
+      environment,
+      channel,
+      version: parsed.raw,
+      displayVersion: parsed.raw,
+      versionScheme: "semver3",
+      versionMajor: parsed.major,
+      versionMinor: parsed.minor,
+      versionPatch: parsed.patch,
+      versionBumpType: inferBumpType(currentRelease?.version, parsed),
+      versionSource: "manual",
+      status: "building",
+      stable: false,
+      frozen: false,
+      git: {
+        url: request.git?.url,
+        branch: request.git?.branch,
+        commit: request.git?.commit,
+        commitShort: request.git?.shortCommit ?? toCommitShort(request.git?.commit),
+      },
+      createdBy: "jenkins-ci",
+      createdAt: now,
+      updatedAt: now,
+      metadata: {
+        targets: this.buildTargetsFromCi(request),
+        source: "jenkins-ci",
+        scope: {
+          region: request.app?.region?.trim() || undefined,
+          audience: request.app?.audience?.trim() || undefined,
+        },
+      },
+    };
+    await this.store.upsertReleaseAsync(release);
+    if (currentRelease) {
+      await this.store.insertReleaseRelationAsync({
+        relationId: createId("reln"),
+        projectId: project.projectId,
+        projectKey,
+        fromReleaseId: currentRelease.releaseId,
+        toReleaseId: release.releaseId,
+        relationType: "derived_from",
+        context: { channel, environment, source: "jenkins-ci" },
+        createdBy: "jenkins-ci",
+        createdAt: now,
+      });
+    }
+    return release;
+  }
+
+  private async ensureCiBuildAsync(
+    request: CiBuildRequest,
+  ): Promise<{ release: ReleaseRecord; build: BuildRecord }> {
+    const release = await this.ensureCiReleaseAsync(request);
+    const buildNumber = this.parseCiBuildNumber(request.buildNumber);
+    const jobName = request.jobName?.trim() || this.config.jenkinsJob;
+    const existingBuild = this.findBuildForCi({
+      projectKey: release.projectKey,
+      environment: release.environment,
+      channel: release.channel,
+      releaseId: release.releaseId,
+      jobName,
+      buildNumber,
+      commit: request.git?.commit,
+    });
+    if (existingBuild) {
+      const nextBuild = this.mergeCiBuildMetadata(existingBuild, request);
+      await this.store.upsertBuildAsync(nextBuild);
+      await this.store.upsertReleaseAsync({
+        ...release,
+        currentBuildId: nextBuild.buildId,
+        updatedAt: nowIso(),
+      });
+      await this.upsertCiProvenanceAsync(nextBuild, request);
+      return { release, build: nextBuild };
+    }
+    const now = nowIso();
+    const targets = this.buildTargetsFromCi(request);
+    const build: BuildRecord = {
+      buildId: createId("bld"),
+      releaseId: release.releaseId,
+      projectId: release.projectId,
+      projectKey: release.projectKey,
+      environment: release.environment,
+      channel: release.channel,
+      status: "queued",
+      triggeredBy: "jenkins-ci",
+      triggerSource: "api",
+      sourceGitUrl: request.git?.url,
+      sourceGitBranch: request.git?.branch,
+      sourceGitCommit: request.git?.commit,
+      sourceGitCommitShort: request.git?.shortCommit ?? toCommitShort(request.git?.commit),
+      jenkinsJob: jobName,
+      jenkinsBuildNumber: buildNumber,
+      baselineVersion: request.baseline?.baselineVersion,
+      baselineManifestUrl: request.baseline?.baselineManifestUrl,
+      idempotencyKey: request.requestId,
+      createdAt: now,
+      updatedAt: now,
+      targets,
+      reports: request.pipelineUrl ? { pipelineUrl: request.pipelineUrl } : undefined,
+    };
+    await this.store.upsertBuildAsync(build);
+    await this.store.upsertReleaseAsync({
+      ...release,
+      currentBuildId: build.buildId,
+      status: "building",
+      updatedAt: now,
+    });
+    await this.upsertCiProvenanceAsync(build, request);
+    return { release, build };
+  }
+
   private baselinePackageForRelease(release: ReleaseRecord): ArtifactRecord | null {
     for (const build of this.store.listBuildsForRelease(release.releaseId)) {
       const artifact = this.selectPatchBundleArtifact(
@@ -1460,12 +2126,28 @@ export class LobsterReleaseRuntime {
     return this.store.getChannelState(projectKey, environment, channel);
   }
 
+  async getChannelStateAsync(
+    projectKey: string,
+    environment: ReleaseEnvironment,
+    channel: ReleaseChannel,
+  ): Promise<ChannelStateRecord | null> {
+    return this.store.getChannelStateAsync(projectKey, environment, channel);
+  }
+
   getRelease(releaseId: string): ReleaseRecord | null {
     return this.store.getRelease(releaseId);
   }
 
+  async getReleaseAsync(releaseId: string): Promise<ReleaseRecord | null> {
+    return this.store.getReleaseAsync(releaseId);
+  }
+
   getBuild(buildId: string): BuildRecord | null {
     return this.store.getBuild(buildId);
+  }
+
+  async getBuildAsync(buildId: string): Promise<BuildRecord | null> {
+    return this.store.getBuildAsync(buildId);
   }
 
   getBuildStatus(buildId: string): {
@@ -1483,6 +2165,29 @@ export class LobsterReleaseRuntime {
       release: this.store.getRelease(build.releaseId),
       artifacts: this.store.listArtifactsForBuild(buildId),
       provenance: this.store.getBuildProvenance(buildId),
+    };
+  }
+
+  async getBuildStatusAsync(buildId: string): Promise<{
+    build: BuildRecord;
+    release: ReleaseRecord | null;
+    artifacts: ArtifactRecord[];
+    provenance: BuildProvenanceRecord | null;
+  }> {
+    const build = await this.store.getBuildAsync(buildId);
+    if (!build) {
+      throw new Error(`build not found: ${buildId}`);
+    }
+    const [release, artifacts, provenance] = await Promise.all([
+      this.store.getReleaseAsync(build.releaseId),
+      this.store.listArtifactsForBuildAsync(buildId),
+      this.store.getBuildProvenanceAsync(buildId),
+    ]);
+    return {
+      build,
+      release,
+      artifacts,
+      provenance,
     };
   }
 
@@ -1563,8 +2268,16 @@ export class LobsterReleaseRuntime {
     return this.store.getRollback(rollbackId);
   }
 
+  async getRollbackAsync(rollbackId: string): Promise<RollbackOperationRecord | null> {
+    return this.store.getRollbackAsync(rollbackId);
+  }
+
   getRollout(rolloutId: string): RolloutRecord | null {
     return this.store.getRollout(rolloutId);
+  }
+
+  async getRolloutAsync(rolloutId: string): Promise<RolloutRecord | null> {
+    return this.store.getRolloutAsync(rolloutId);
   }
 
   listRollouts(params: {
@@ -1576,6 +2289,17 @@ export class LobsterReleaseRuntime {
     limit?: number;
   }): RolloutRecord[] {
     return this.store.listRollouts(params);
+  }
+
+  async listRolloutsAsync(params: {
+    projectKey: string;
+    environment?: ReleaseEnvironment;
+    channel?: ReleaseChannel;
+    releaseId?: string;
+    statuses?: RolloutRecord["status"][];
+    limit?: number;
+  }): Promise<RolloutRecord[]> {
+    return this.store.listRolloutsAsync(params);
   }
 
   listStableReleases(params: {
@@ -1590,6 +2314,24 @@ export class LobsterReleaseRuntime {
         environment: params.environment,
         channel: params.channel,
       })
+      .filter((release) => release.stable)
+      .toSorted((left, right) => compareVersions(right.version, left.version))
+      .slice(0, params.limit ?? 20);
+  }
+
+  async listStableReleasesAsync(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    limit?: number;
+  }): Promise<ReleaseRecord[]> {
+    return (
+      await this.store.listReleasesAsync({
+        projectKey: params.projectKey,
+        environment: params.environment,
+        channel: params.channel,
+      })
+    )
       .filter((release) => release.stable)
       .toSorted((left, right) => compareVersions(right.version, left.version))
       .slice(0, params.limit ?? 20);
@@ -1632,6 +2374,53 @@ export class LobsterReleaseRuntime {
     };
   }
 
+  async getChannelHistoryAsync(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    limit?: number;
+  }): Promise<{
+    channelState: ChannelStateRecord | null;
+    releases: ReleaseRecord[];
+    edges: ReleaseRelationRecord[];
+  }> {
+    const releases = (
+      await this.store.listReleasesAsync({
+        projectKey: params.projectKey,
+        environment: params.environment,
+        channel: params.channel,
+      })
+    )
+      .toSorted((left, right) => {
+        const leftTime = left.publishedAt ?? left.updatedAt;
+        const rightTime = right.publishedAt ?? right.updatedAt;
+        return rightTime.localeCompare(leftTime);
+      })
+      .slice(0, params.limit ?? 20);
+    const releaseIds = new Set(releases.map((release) => release.releaseId));
+    const relationGroups = await Promise.all(
+      releases.map((release) =>
+        this.store.listReleaseRelationsAsync(params.projectKey, release.releaseId),
+      ),
+    );
+    const edges = relationGroups
+      .flat()
+      .filter(
+        (edge, index, all) =>
+          all.findIndex((item) => item.relationId === edge.relationId) === index,
+      )
+      .filter((edge) => releaseIds.has(edge.fromReleaseId) || releaseIds.has(edge.toReleaseId));
+    return {
+      channelState: await this.getChannelStateAsync(
+        params.projectKey,
+        params.environment,
+        params.channel,
+      ),
+      releases,
+      edges,
+    };
+  }
+
   listBaselines(params: {
     projectKey: string;
     environment: ReleaseEnvironment;
@@ -1647,6 +2436,27 @@ export class LobsterReleaseRuntime {
         channel: params.channel,
         platform: params.platform,
       })
+      .filter((baseline) => !params.targetVersion || baseline.toVersion === params.targetVersion)
+      .slice(0, params.limit ?? 20);
+  }
+
+  async listBaselinesAsync(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    platform: string;
+    targetVersion?: string;
+    limit?: number;
+  }): Promise<BaselineRecord[]> {
+    return (
+      await this.store.listBaselinesAsync({
+        projectKey: params.projectKey,
+        environment: params.environment,
+        channel: params.channel,
+        platform: params.platform,
+      })
+    )
+      .map((baseline) => this.repairBaselineManifestUrl(baseline))
       .filter((baseline) => !params.targetVersion || baseline.toVersion === params.targetVersion)
       .slice(0, params.limit ?? 20);
   }
@@ -1711,6 +2521,64 @@ export class LobsterReleaseRuntime {
     };
   }
 
+  async getBaselineLineageAsync(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    platform: string;
+    releaseId?: string;
+    version?: string;
+  }): Promise<{
+    targetVersion: string;
+    baselines: BaselineRecord[];
+    releases: ReleaseRecord[];
+  }> {
+    const release = params.releaseId ? await this.store.getReleaseAsync(params.releaseId) : null;
+    const targetVersion = params.version ?? release?.version;
+    if (!targetVersion) {
+      throw new Error("version or releaseId is required");
+    }
+    const available = (
+      await this.store.listBaselinesAsync({
+        projectKey: params.projectKey,
+        environment: params.environment,
+        channel: params.channel,
+        platform: params.platform,
+      })
+    ).map((baseline) => this.repairBaselineManifestUrl(baseline));
+    const chain: BaselineRecord[] = [];
+    const releaseIds = new Set<string>();
+    const seenVersions = new Set<string>();
+    let cursor = targetVersion;
+    while (cursor && !seenVersions.has(cursor)) {
+      seenVersions.add(cursor);
+      const baseline = available.find(
+        (item) => item.toVersion === cursor && item.status === "active",
+      );
+      if (!baseline) {
+        break;
+      }
+      chain.push(baseline);
+      if (baseline.fromReleaseId) {
+        releaseIds.add(baseline.fromReleaseId);
+      }
+      if (baseline.toReleaseId) {
+        releaseIds.add(baseline.toReleaseId);
+      }
+      cursor = baseline.fromVersion;
+    }
+    const releases = (
+      await Promise.all([...releaseIds].map((releaseId) => this.store.getReleaseAsync(releaseId)))
+    )
+      .filter((item): item is ReleaseRecord => Boolean(item))
+      .toSorted((left, right) => compareVersions(right.version, left.version));
+    return {
+      targetVersion,
+      baselines: chain,
+      releases,
+    };
+  }
+
   getPromotionHistory(params: {
     projectKey: string;
     environment?: ReleaseEnvironment;
@@ -1733,6 +2601,57 @@ export class LobsterReleaseRuntime {
         const toRelease = this.store.getRelease(relation.toReleaseId);
         return { relation, fromRelease, toRelease };
       })
+      .filter(({ fromRelease, toRelease }) => {
+        if (params.environment) {
+          const matchesEnvironment =
+            fromRelease?.environment === params.environment ||
+            toRelease?.environment === params.environment;
+          if (!matchesEnvironment) {
+            return false;
+          }
+        }
+        if (params.channel) {
+          const matchesChannel =
+            fromRelease?.channel === params.channel || toRelease?.channel === params.channel;
+          if (!matchesChannel) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .slice(0, params.limit ?? 20);
+  }
+
+  async getPromotionHistoryAsync(params: {
+    projectKey: string;
+    environment?: ReleaseEnvironment;
+    channel?: ReleaseChannel;
+    releaseId?: string;
+    limit?: number;
+  }): Promise<
+    Array<{
+      relation: ReleaseRelationRecord;
+      fromRelease: ReleaseRecord | null;
+      toRelease: ReleaseRecord | null;
+    }>
+  > {
+    const relations = params.releaseId
+      ? (await this.store.listReleaseRelationsAsync(params.projectKey, params.releaseId)).filter(
+          (edge) => edge.relationType === "promoted_from",
+        )
+      : await this.store.listReleaseRelationsByTypeAsync(
+          params.projectKey,
+          "promoted_from",
+          params.limit,
+        );
+    const items = await Promise.all(
+      relations.map(async (relation) => ({
+        relation,
+        fromRelease: await this.store.getReleaseAsync(relation.fromReleaseId),
+        toRelease: await this.store.getReleaseAsync(relation.toReleaseId),
+      })),
+    );
+    return items
       .filter(({ fromRelease, toRelease }) => {
         if (params.environment) {
           const matchesEnvironment =
@@ -1783,6 +2702,40 @@ export class LobsterReleaseRuntime {
           limit: 20,
         }),
       }));
+  }
+
+  async getRollbackAuditAsync(params: {
+    projectKey: string;
+    environment?: ReleaseEnvironment;
+    channel?: ReleaseChannel;
+    limit?: number;
+  }): Promise<
+    Array<{
+      rollback: RollbackOperationRecord;
+      fromRelease: ReleaseRecord | null;
+      toRelease: ReleaseRecord | null;
+      events: EventLogRecord[];
+    }>
+  > {
+    const rollbacks = await this.store.listRollbacksAsync({
+      projectKey: params.projectKey,
+      environment: params.environment,
+      channel: params.channel,
+      limit: params.limit,
+    });
+    return Promise.all(
+      rollbacks.map(async (rollback) => ({
+        rollback,
+        fromRelease: await this.store.getReleaseAsync(rollback.fromReleaseId),
+        toRelease: await this.store.getReleaseAsync(rollback.toReleaseId),
+        events: await this.store.listEventsAsync({
+          projectKey: params.projectKey,
+          objectType: "rollback",
+          objectId: rollback.rollbackId,
+          limit: 20,
+        }),
+      })),
+    );
   }
 
   getRollbackPlan(params: {
@@ -1841,8 +2794,70 @@ export class LobsterReleaseRuntime {
     };
   }
 
+  async getRollbackPlanAsync(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+  }): Promise<{
+    channelState: ChannelStateRecord | null;
+    currentRelease: ReleaseRecord | null;
+    recommendedTargetReleaseId?: string;
+    candidates: Array<{
+      release: ReleaseRecord;
+      compatible: boolean;
+      reason?: string;
+    }>;
+  }> {
+    const channelState = await this.getChannelStateAsync(
+      params.projectKey,
+      params.environment,
+      params.channel,
+    );
+    const currentRelease = channelState?.currentReleaseId
+      ? await this.store.getReleaseAsync(channelState.currentReleaseId)
+      : null;
+    const candidates = (
+      await this.listStableReleasesAsync({
+        projectKey: params.projectKey,
+        environment: params.environment,
+        channel: params.channel,
+        limit: 20,
+      })
+    )
+      .filter((release) => release.releaseId !== currentRelease?.releaseId)
+      .map((release) => {
+        if (!currentRelease) {
+          return { release, compatible: true };
+        }
+        try {
+          this.assertRollbackCompatibility(currentRelease, release);
+          return { release, compatible: true };
+        } catch (error) {
+          return {
+            release,
+            compatible: false,
+            reason: error instanceof Error ? error.message : String(error),
+          };
+        }
+      });
+    const recommendedTargetReleaseId =
+      candidates.find(
+        (item) => item.release.releaseId === channelState?.previousReleaseId && item.compatible,
+      )?.release.releaseId ?? candidates.find((item) => item.compatible)?.release.releaseId;
+    return {
+      channelState,
+      currentRelease,
+      recommendedTargetReleaseId,
+      candidates,
+    };
+  }
+
   getNotification(notificationId: string): NotificationOutboxRecord | null {
     return this.store.getNotification(notificationId);
+  }
+
+  async getNotificationAsync(notificationId: string): Promise<NotificationOutboxRecord | null> {
+    return this.store.getNotificationAsync(notificationId);
   }
 
   private buildReleaseNotesText(
@@ -1938,6 +2953,73 @@ export class LobsterReleaseRuntime {
     return event;
   }
 
+  private async archiveReleaseChangelogAsync(
+    release: ReleaseRecord,
+    operator: string,
+    params?: {
+      build?: BuildRecord | null;
+      reason?: string;
+      sourceReleaseId?: string;
+      summary?: string;
+    },
+  ): Promise<EventLogRecord> {
+    const existing = (
+      await this.store.listEventsAsync({
+        projectKey: release.projectKey,
+        objectType: "release",
+        objectId: release.releaseId,
+        eventType: "release.changelog.archived",
+        limit: 1,
+      })
+    )[0];
+    if (existing) {
+      return existing;
+    }
+    const build =
+      params?.build ??
+      (release.currentBuildId ? await this.store.getBuildAsync(release.currentBuildId) : null) ??
+      null;
+    const artifacts = build ? await this.store.listArtifactsForBuildAsync(build.buildId) : [];
+    const notes = this.buildReleaseNotesText(release, build, artifacts, params?.summary);
+    const event = await this.recordEventAsync({
+      projectId: release.projectId,
+      projectKey: release.projectKey,
+      environment: release.environment,
+      objectType: "release",
+      objectId: release.releaseId,
+      eventType: "release.changelog.archived",
+      payload: {
+        version: release.version,
+        channel: release.channel,
+        environment: release.environment,
+        releaseId: release.releaseId,
+        buildId: build?.buildId ?? null,
+        manifestUrl: this.canonicalManifestUrlForRelease(release) ?? null,
+        notes,
+        sourceNotes: release.notes ?? null,
+        reason: params?.reason ?? "publish",
+        sourceReleaseId: params?.sourceReleaseId ?? null,
+        artifacts: artifacts.map((artifact) => ({
+          artifactType: artifact.artifactType,
+          fileName: artifact.fileName,
+          platform: artifact.platform,
+          downloadUrl: artifact.downloadUrl,
+        })),
+      },
+      createdBy: operator,
+    });
+    await this.store.upsertReleaseAsync({
+      ...release,
+      metadata: {
+        ...release.metadata,
+        changelogArchiveEventId: event.eventId,
+        changelogArchivedAt: event.createdAt,
+      },
+      updatedAt: nowIso(),
+    });
+    return event;
+  }
+
   generateReleaseNotes(releaseId: string): {
     release: ReleaseRecord;
     build: BuildRecord | null;
@@ -1971,6 +3053,43 @@ export class LobsterReleaseRuntime {
     };
   }
 
+  async generateReleaseNotesAsync(releaseId: string): Promise<{
+    release: ReleaseRecord;
+    build: BuildRecord | null;
+    archived: boolean;
+    notes: string;
+    artifacts: ArtifactRecord[];
+  }> {
+    const release = await this.store.getReleaseAsync(releaseId);
+    if (!release) {
+      throw new Error(`release not found: ${releaseId}`);
+    }
+    const build = release.currentBuildId
+      ? await this.store.getBuildAsync(release.currentBuildId)
+      : null;
+    const artifacts = build ? await this.store.listArtifactsForBuildAsync(build.buildId) : [];
+    const archived = (
+      await this.store.listEventsAsync({
+        projectKey: release.projectKey,
+        objectType: "release",
+        objectId: release.releaseId,
+        eventType: "release.changelog.archived",
+        limit: 1,
+      })
+    )[0];
+    const notes =
+      typeof archived?.payload.notes === "string"
+        ? archived.payload.notes
+        : this.buildReleaseNotesText(release, build, artifacts);
+    return {
+      release,
+      build,
+      archived: Boolean(archived),
+      notes,
+      artifacts,
+    };
+  }
+
   runReleasePreflight(releaseId: string): {
     release: ReleaseRecord;
     build: BuildRecord | null;
@@ -1986,6 +3105,64 @@ export class LobsterReleaseRuntime {
     }
     const build = release.currentBuildId ? this.store.getBuild(release.currentBuildId) : null;
     const artifacts = build ? this.store.listArtifactsForBuild(build.buildId) : [];
+    const issues: string[] = [];
+    const warnings: string[] = [];
+    if (release.frozen) {
+      issues.push("release is frozen");
+    }
+    if (!build) {
+      issues.push("release has no current build");
+    } else {
+      if (!["uploaded", "finished"].includes(build.status)) {
+        warnings.push(`build status is ${build.status}`);
+      }
+      const smokeGate = this.evaluatePublishSmokeGate(
+        release,
+        build,
+        artifacts,
+        build.reports?.patchValidation as Record<string, unknown> | undefined,
+      );
+      if (smokeGate.passed !== true) {
+        issues.push(...((smokeGate.errors as string[] | undefined) ?? []));
+      }
+      warnings.push(...((smokeGate.warnings as string[] | undefined) ?? []));
+      return {
+        release,
+        build,
+        artifacts,
+        passed: issues.length === 0,
+        issues,
+        warnings,
+        smokeGate,
+      };
+    }
+    return {
+      release,
+      build,
+      artifacts,
+      passed: issues.length === 0,
+      issues,
+      warnings,
+    };
+  }
+
+  async runReleasePreflightAsync(releaseId: string): Promise<{
+    release: ReleaseRecord;
+    build: BuildRecord | null;
+    artifacts: ArtifactRecord[];
+    passed: boolean;
+    issues: string[];
+    warnings: string[];
+    smokeGate?: Record<string, unknown>;
+  }> {
+    const release = await this.store.getReleaseAsync(releaseId);
+    if (!release) {
+      throw new Error(`release not found: ${releaseId}`);
+    }
+    const build = release.currentBuildId
+      ? await this.store.getBuildAsync(release.currentBuildId)
+      : null;
+    const artifacts = build ? await this.store.listArtifactsForBuildAsync(build.buildId) : [];
     const issues: string[] = [];
     const warnings: string[] = [];
     if (release.frozen) {
@@ -2079,6 +3256,39 @@ export class LobsterReleaseRuntime {
     return reclaimed;
   }
 
+  private async reclaimTimedOutNotificationsAsync(
+    deliveryChannel: NotificationOutboxRecord["deliveryChannel"],
+    nowMs = Date.now(),
+  ): Promise<NotificationOutboxRecord[]> {
+    const sending = await this.store.listNotificationsAsync({
+      statuses: ["sending"],
+      deliveryChannel,
+    });
+    const reclaimed: NotificationOutboxRecord[] = [];
+    for (const record of sending) {
+      const claimedAtMs = record.claimedAt ? new Date(record.claimedAt).getTime() : NaN;
+      if (!Number.isFinite(claimedAtMs) || nowMs - claimedAtMs < NOTIFICATION_SENDING_TIMEOUT_MS) {
+        continue;
+      }
+      const timedOutAt = new Date(nowMs).toISOString();
+      const maxedOut = record.attemptCount >= NOTIFICATION_MAX_ATTEMPTS;
+      const next: NotificationOutboxRecord = {
+        ...record,
+        status: "failed",
+        lastError: `delivery claim timed out after ${NOTIFICATION_SENDING_TIMEOUT_MS}ms`,
+        claimedAt: undefined,
+        deadLetteredAt: maxedOut ? timedOutAt : undefined,
+        nextAttemptAt: maxedOut
+          ? undefined
+          : this.nextNotificationRetryAt(record.attemptCount, nowMs),
+        updatedAt: timedOutAt,
+      };
+      await this.store.upsertNotificationAsync(next);
+      reclaimed.push(next);
+    }
+    return reclaimed;
+  }
+
   renderNotification(notificationId: string): {
     notification: NotificationOutboxRecord;
     messageText: string;
@@ -2090,6 +3300,90 @@ export class LobsterReleaseRuntime {
     };
   } {
     const notification = this.store.getNotification(notificationId);
+    if (!notification) {
+      throw new Error(`notification not found: ${notificationId}`);
+    }
+    const payload = notification.payload;
+    const release = (payload.release as Record<string, unknown> | undefined) ?? {};
+    const build = (payload.build as Record<string, unknown> | undefined) ?? {};
+    const rollback = (payload.rollback as Record<string, unknown> | undefined) ?? {};
+    const rollout = (payload.rollout as Record<string, unknown> | undefined) ?? {};
+    const rolloutHealth = (payload.rolloutHealth as Record<string, unknown> | undefined) ?? {};
+    const summary = typeof payload.summary === "string" ? payload.summary : undefined;
+    const scopeLines = [
+      typeof rollout.scope === "object" && rollout.scope
+        ? ((rollout.scope as Record<string, unknown>).region as string | undefined)
+        : undefined,
+      typeof rollout.scope === "object" && rollout.scope
+        ? ((rollout.scope as Record<string, unknown>).audience as string | undefined)
+        : undefined,
+    ].filter((value): value is string => Boolean(value));
+    const lines = [
+      `[Lobster Release] ${notification.eventType}`,
+      `Project: ${notification.projectKey}`,
+      notification.environment ? `Environment: ${notification.environment}` : null,
+      notification.channel ? `Channel: ${notification.channel}` : null,
+      typeof release.version === "string" ? `Version: ${release.version}` : null,
+      typeof release.releaseId === "string" ? `Release: ${release.releaseId}` : null,
+      typeof build.buildId === "string" ? `Build: ${build.buildId}` : null,
+      typeof build.jenkinsBuildNumber === "number"
+        ? `Jenkins Build: #${build.jenkinsBuildNumber}`
+        : null,
+      typeof rollback.rollbackId === "string" ? `Rollback: ${rollback.rollbackId}` : null,
+      typeof rollout.rolloutId === "string" ? `Rollout: ${rollout.rolloutId}` : null,
+      typeof rollout.trafficPercent === "number" ? `Traffic: ${rollout.trafficPercent}%` : null,
+      scopeLines.length > 0 ? `Scope: ${scopeLines.join(" / ")}` : null,
+      typeof payload.action === "string" ? `Action: ${payload.action}` : null,
+      typeof rolloutHealth.health === "string" ? `Health: ${rolloutHealth.health}` : null,
+      summary ? `Summary: ${summary}` : null,
+      typeof payload.reason === "string"
+        ? `Reason: ${payload.reason}`
+        : typeof rollback.reason === "string"
+          ? `Reason: ${rollback.reason}`
+          : null,
+      typeof notification.lastError === "string" ? `Last Error: ${notification.lastError}` : null,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n");
+    const mode =
+      this.config.notifierChannel && this.config.notifierTarget
+        ? ("explicit_target" as const)
+        : this.config.notifierSessionKey
+          ? ("session_bound" as const)
+          : ("unconfigured" as const);
+    return {
+      notification,
+      messageText: lines,
+      deliveryPlan: {
+        tool: "message",
+        configured: mode !== "unconfigured",
+        mode,
+        args: {
+          action: "send",
+          ...(mode === "explicit_target" && this.config.notifierChannel
+            ? { channel: this.config.notifierChannel }
+            : {}),
+          ...(mode === "explicit_target" && this.config.notifierTarget
+            ? { target: this.config.notifierTarget }
+            : {}),
+          ...(this.config.notifierAccountId ? { accountId: this.config.notifierAccountId } : {}),
+          message: lines,
+        },
+      },
+    };
+  }
+
+  async renderNotificationAsync(notificationId: string): Promise<{
+    notification: NotificationOutboxRecord;
+    messageText: string;
+    deliveryPlan: {
+      tool: "message";
+      args: Record<string, unknown>;
+      configured: boolean;
+      mode: "explicit_target" | "session_bound" | "unconfigured";
+    };
+  }> {
+    const notification = await this.store.getNotificationAsync(notificationId);
     if (!notification) {
       throw new Error(`notification not found: ${notificationId}`);
     }
@@ -2200,6 +3494,47 @@ export class LobsterReleaseRuntime {
     });
   }
 
+  async pullNotificationsAsync(params?: {
+    limit?: number;
+    includeFailed?: boolean;
+    deliveryChannel?: NotificationOutboxRecord["deliveryChannel"];
+  }): Promise<NotificationOutboxRecord[]> {
+    const deliveryChannel = params?.deliveryChannel ?? "feishu";
+    const nowMs = Date.now();
+    await this.reclaimTimedOutNotificationsAsync(deliveryChannel, nowMs);
+    const candidates = (
+      await this.store.listNotificationsAsync({
+        statuses: params?.includeFailed ? ["pending", "failed"] : ["pending"],
+        deliveryChannel,
+      })
+    )
+      .filter((record) => {
+        if (record.status === "pending") {
+          return true;
+        }
+        return params?.includeFailed === true && this.isNotificationRetryable(record, nowMs);
+      })
+      .slice(0, params?.limit ?? 10);
+    const claimedAt = new Date(nowMs).toISOString();
+    const claimed = await Promise.all(
+      candidates.map(async (record) => {
+        const next: NotificationOutboxRecord = {
+          ...record,
+          status: "sending",
+          attemptCount: record.attemptCount + 1,
+          claimedAt,
+          lastAttemptAt: claimedAt,
+          nextAttemptAt: undefined,
+          deadLetteredAt: undefined,
+          updatedAt: claimedAt,
+        };
+        await this.store.upsertNotificationAsync(next);
+        return next;
+      }),
+    );
+    return claimed;
+  }
+
   markNotificationSent(
     notificationId: string,
     params?: { deliveryNote?: string },
@@ -2230,6 +3565,37 @@ export class LobsterReleaseRuntime {
     return next;
   }
 
+  async markNotificationSentAsync(
+    notificationId: string,
+    params?: { deliveryNote?: string },
+  ): Promise<NotificationOutboxRecord> {
+    const record = await this.store.getNotificationAsync(notificationId);
+    if (!record) {
+      throw new Error(`notification not found: ${notificationId}`);
+    }
+    const sentAt = nowIso();
+    const nextPayload =
+      params?.deliveryNote && params.deliveryNote.trim()
+        ? {
+            ...record.payload,
+            deliveryNote: params.deliveryNote.trim(),
+          }
+        : record.payload;
+    const next: NotificationOutboxRecord = {
+      ...record,
+      status: "sent",
+      payload: nextPayload,
+      lastError: undefined,
+      claimedAt: undefined,
+      nextAttemptAt: undefined,
+      deadLetteredAt: undefined,
+      sentAt,
+      updatedAt: sentAt,
+    };
+    await this.store.upsertNotificationAsync(next);
+    return next;
+  }
+
   markNotificationFailed(notificationId: string, error: string): NotificationOutboxRecord {
     const record = this.store.getNotification(notificationId);
     if (!record) {
@@ -2249,6 +3615,45 @@ export class LobsterReleaseRuntime {
       updatedAt: new Date(failedAt).toISOString(),
     };
     this.store.upsertNotification(next);
+    this.recordEvent({
+      projectId: record.projectId,
+      projectKey: record.projectKey,
+      environment: record.environment,
+      objectType: "notification",
+      objectId: record.notificationId,
+      eventType: "notification.failed",
+      payload: {
+        eventType: record.eventType,
+        attemptCount: next.attemptCount,
+        deadLetteredAt: next.deadLetteredAt ?? null,
+        lastError: error,
+      },
+    });
+    return next;
+  }
+
+  async markNotificationFailedAsync(
+    notificationId: string,
+    error: string,
+  ): Promise<NotificationOutboxRecord> {
+    const record = await this.store.getNotificationAsync(notificationId);
+    if (!record) {
+      throw new Error(`notification not found: ${notificationId}`);
+    }
+    const failedAt = Date.now();
+    const maxedOut = record.attemptCount >= NOTIFICATION_MAX_ATTEMPTS;
+    const next: NotificationOutboxRecord = {
+      ...record,
+      status: "failed",
+      lastError: error,
+      claimedAt: undefined,
+      deadLetteredAt: maxedOut ? new Date(failedAt).toISOString() : undefined,
+      nextAttemptAt: maxedOut
+        ? undefined
+        : this.nextNotificationRetryAt(record.attemptCount, failedAt),
+      updatedAt: new Date(failedAt).toISOString(),
+    };
+    await this.store.upsertNotificationAsync(next);
     this.recordEvent({
       projectId: record.projectId,
       projectKey: record.projectKey,
@@ -2293,6 +3698,33 @@ export class LobsterReleaseRuntime {
     return next;
   }
 
+  async requeueNotificationAsync(
+    notificationId: string,
+    params?: { reason?: string },
+  ): Promise<NotificationOutboxRecord> {
+    const record = await this.store.getNotificationAsync(notificationId);
+    if (!record) {
+      throw new Error(`notification not found: ${notificationId}`);
+    }
+    if (record.status === "sent") {
+      throw new Error(`notification already sent: ${notificationId}`);
+    }
+    const requeuedAt = nowIso();
+    const next: NotificationOutboxRecord = {
+      ...record,
+      status: "pending",
+      lastError: undefined,
+      claimedAt: undefined,
+      nextAttemptAt: undefined,
+      deadLetteredAt: undefined,
+      requeuedAt,
+      requeueReason: params?.reason?.trim() || "manual requeue",
+      updatedAt: requeuedAt,
+    };
+    await this.store.upsertNotificationAsync(next);
+    return next;
+  }
+
   async createRelease(input: CreateReleaseInput): Promise<{
     release: ReleaseRecord;
     currentChannelReleaseId?: string;
@@ -2302,8 +3734,8 @@ export class LobsterReleaseRuntime {
     const environment = this.resolveProjectEnvironment(input.projectKey, input.environment);
     const channel = this.resolveProjectChannel(input.projectKey, input.channel);
     this.assertProjectScope(input.projectKey, environment, channel, input.scope);
-    const project = this.ensureProject(input.projectKey);
-    const existing = this.findReleaseByVersion({
+    const project = await this.ensureProjectAsync(input.projectKey);
+    const existing = await this.findReleaseByVersionAsync({
       projectKey: input.projectKey,
       environment,
       channel,
@@ -2314,9 +3746,9 @@ export class LobsterReleaseRuntime {
         `release version already exists for ${input.projectKey}/${environment}/${channel}: ${input.version}`,
       );
     }
-    const currentState = this.getChannelState(input.projectKey, environment, channel);
+    const currentState = await this.getChannelStateAsync(input.projectKey, environment, channel);
     const currentRelease = currentState?.currentReleaseId
-      ? this.store.getRelease(currentState.currentReleaseId)
+      ? await this.store.getReleaseAsync(currentState.currentReleaseId)
       : null;
     const nextParsed = parseVersion(input.version);
     const bumpType = inferBumpType(currentRelease?.version, nextParsed);
@@ -2354,9 +3786,9 @@ export class LobsterReleaseRuntime {
         ...(input.scope ? { scope: input.scope } : {}),
       },
     };
-    this.store.upsertRelease(release);
+    await this.store.upsertReleaseAsync(release);
     if (currentRelease) {
-      this.store.insertReleaseRelation({
+      await this.store.insertReleaseRelationAsync({
         relationId: createId("reln"),
         projectId: project.projectId,
         projectKey: project.projectKey,
@@ -2464,6 +3896,72 @@ export class LobsterReleaseRuntime {
       createdAt: nowIso(),
     };
     this.store.upsertBaseline(baseline);
+    return baseline;
+  }
+
+  async resolveBaselineAsync(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    targetVersion: string;
+    platform: string;
+  }): Promise<BaselineRecord | null> {
+    const baselineRelease = (
+      await this.store.listReleasesAsync({
+        projectKey: params.projectKey,
+        environment: params.environment,
+        channel: params.channel,
+      })
+    )
+      .filter(
+        (release) => release.stable && compareVersions(release.version, params.targetVersion) < 0,
+      )
+      .toSorted((a, b) => compareVersions(b.version, a.version))[0];
+    const baselineManifestUrl = baselineRelease
+      ? this.canonicalManifestUrlForRelease(baselineRelease)
+      : undefined;
+    if (!baselineRelease || !baselineManifestUrl) {
+      return null;
+    }
+    const existing = (
+      await this.store.listBaselinesAsync({
+        projectKey: params.projectKey,
+        environment: params.environment,
+        channel: params.channel,
+        platform: params.platform,
+      })
+    )
+      .map((item) => this.repairBaselineManifestUrl(item))
+      .find(
+        (item) =>
+          item.fromReleaseId === baselineRelease.releaseId &&
+          item.fromVersion === baselineRelease.version &&
+          item.toVersion === params.targetVersion &&
+          item.status === "active",
+      );
+    if (existing) {
+      return existing;
+    }
+    const baseline: BaselineRecord = {
+      baselineId: createId("base"),
+      projectId: baselineRelease.projectId,
+      projectKey: baselineRelease.projectKey,
+      environment: baselineRelease.environment,
+      channel: baselineRelease.channel,
+      platform: params.platform,
+      fromReleaseId: baselineRelease.releaseId,
+      toReleaseId: undefined,
+      fromVersion: baselineRelease.version,
+      toVersion: params.targetVersion,
+      baselineManifestUrl,
+      compatibilityRule:
+        parseVersion(params.targetVersion).major !== parseVersion(baselineRelease.version).major
+          ? "reset"
+          : "reuse",
+      status: "active",
+      createdAt: nowIso(),
+    };
+    await this.store.upsertBaselineAsync(baseline);
     return baseline;
   }
 
@@ -3017,6 +4515,30 @@ export class LobsterReleaseRuntime {
     }
   }
 
+  private async assertNoActiveRollbackAsync(
+    projectKey: string,
+    environment: ReleaseEnvironment,
+    channel: ReleaseChannel,
+    action: string,
+  ): Promise<void> {
+    const active = (
+      await this.store.listRollbacksAsync({
+        projectKey,
+        environment,
+        channel,
+        limit: 20,
+      })
+    ).find(
+      (rollback) =>
+        rollback.status === "requested" ||
+        rollback.status === "approved" ||
+        rollback.status === "executing",
+    );
+    if (active) {
+      throw new Error(`rollback.in_progress: ${action} blocked by rollback ${active.rollbackId}`);
+    }
+  }
+
   async triggerRelease(input: TriggerReleaseInput): Promise<{
     releaseId: string;
     buildId: string;
@@ -3024,7 +4546,7 @@ export class LobsterReleaseRuntime {
     jenkinsJob?: string;
     jenkinsQueueId?: string;
   }> {
-    const release = this.store.getRelease(input.releaseId);
+    const release = await this.store.getReleaseAsync(input.releaseId);
     if (!release || release.projectKey !== input.projectKey) {
       throw new Error(`release not found: ${input.releaseId}`);
     }
@@ -3036,7 +4558,7 @@ export class LobsterReleaseRuntime {
     );
     const baseline =
       release.metadata && (release.metadata.targets as BuildTargets | undefined)?.patch
-        ? this.resolveBaseline({
+        ? await this.resolveBaselineAsync({
             projectKey: release.projectKey,
             environment: release.environment,
             channel: release.channel,
@@ -3073,8 +4595,8 @@ export class LobsterReleaseRuntime {
       updatedAt: now,
       targets,
     };
-    this.store.upsertBuild(build);
-    this.store.upsertRelease({
+    await this.store.upsertBuildAsync(build);
+    await this.store.upsertReleaseAsync({
       ...release,
       status: "building",
       currentBuildId: buildId,
@@ -3088,18 +4610,18 @@ export class LobsterReleaseRuntime {
         baselineVersion: baseline?.fromVersion,
       },
     });
-    this.store.upsertBuildProvenance(provenance);
+    await this.store.upsertBuildProvenanceAsync(provenance);
     let queueId: string | undefined;
     if (this.config.jenkinsBaseUrl && this.config.jenkinsJob) {
       queueId = await this.triggerJenkinsBuild(release, build, baseline);
       build.jenkinsQueueId = queueId;
       build.status = "queued";
       build.updatedAt = nowIso();
-      this.store.upsertBuild(build);
+      await this.store.upsertBuildAsync(build);
     } else {
       build.status = "queued";
       build.updatedAt = nowIso();
-      this.store.upsertBuild(build);
+      await this.store.upsertBuildAsync(build);
     }
     this.recordEvent({
       projectId: release.projectId,
@@ -3368,6 +4890,92 @@ export class LobsterReleaseRuntime {
     return next;
   }
 
+  async recordBuildStartAsync(
+    buildId: string,
+    payload: {
+      jenkinsJob?: string;
+      jenkinsBuildNumber?: number;
+      jenkinsQueueId?: string;
+      executorNode?: string;
+      executorLabel?: string;
+      startedAt?: string;
+    },
+  ): Promise<BuildRecord> {
+    const build = await this.store.getBuildAsync(buildId);
+    if (!build) {
+      throw new Error(`build not found: ${buildId}`);
+    }
+    const next: BuildRecord = {
+      ...build,
+      status: this.advanceBuildStatus(build.status, "building"),
+      jenkinsJob: payload.jenkinsJob ?? build.jenkinsJob,
+      jenkinsBuildNumber: payload.jenkinsBuildNumber ?? build.jenkinsBuildNumber,
+      jenkinsQueueId: payload.jenkinsQueueId ?? build.jenkinsQueueId,
+      startedAt: payload.startedAt ?? build.startedAt ?? nowIso(),
+      updatedAt: nowIso(),
+    };
+    await this.store.upsertBuildAsync(next);
+    const currentProvenance =
+      (await this.store.getBuildProvenanceAsync(buildId)) ?? this.createProvenance(next);
+    await this.store.upsertBuildProvenanceAsync({
+      ...currentProvenance,
+      jenkinsJob: next.jenkinsJob,
+      jenkinsBuildNumber: next.jenkinsBuildNumber,
+      jenkinsQueueId: next.jenkinsQueueId,
+      executorNode: payload.executorNode,
+      executorLabel: payload.executorLabel,
+      capturedAt: nowIso(),
+      provenanceHash: sha256Text(
+        JSON.stringify({
+          ...currentProvenance.parameters,
+          executorNode: payload.executorNode,
+          executorLabel: payload.executorLabel,
+          jenkinsBuildNumber: next.jenkinsBuildNumber,
+        }),
+      ),
+    });
+    const release = await this.store.getReleaseAsync(next.releaseId);
+    if (release) {
+      const startedEvent = await this.recordEventAsync({
+        projectId: release.projectId,
+        projectKey: release.projectKey,
+        environment: release.environment,
+        objectType: "build",
+        objectId: next.buildId,
+        eventType: "build.started",
+        payload: {
+          releaseId: release.releaseId,
+          version: release.version,
+          channel: release.channel,
+          jenkinsJob: next.jenkinsJob,
+          jenkinsBuildNumber: next.jenkinsBuildNumber,
+        },
+      });
+      await this.queueNotificationAsync({
+        event: startedEvent,
+        dedupeKey: `build.started:${next.buildId}`,
+        payload: {
+          projectKey: release.projectKey,
+          environment: release.environment,
+          channel: release.channel,
+          release: {
+            releaseId: release.releaseId,
+            version: release.version,
+            status: release.status,
+          },
+          build: {
+            buildId: next.buildId,
+            status: next.status,
+            jenkinsJob: next.jenkinsJob,
+            jenkinsBuildNumber: next.jenkinsBuildNumber,
+          },
+          summary: "Build started",
+        },
+      });
+    }
+    return next;
+  }
+
   async recordBuildPublish(
     buildId: string,
     payload: {
@@ -3388,18 +4996,18 @@ export class LobsterReleaseRuntime {
       }>;
     },
   ): Promise<{ build: BuildRecord; manifest: ReleaseManifest }> {
-    const build = this.store.getBuild(buildId);
+    const build = await this.store.getBuildAsync(buildId);
     if (!build) {
       throw new Error(`build not found: ${buildId}`);
     }
-    const release = this.store.getRelease(build.releaseId);
+    const release = await this.store.getReleaseAsync(build.releaseId);
     if (!release) {
       throw new Error(`release not found: ${build.releaseId}`);
     }
     const existingArtifactKeys = new Set(
-      this.store
-        .listArtifactsForBuild(buildId)
-        .map((artifact) => this.artifactIdentityKey(artifact)),
+      (await this.store.listArtifactsForBuildAsync(buildId)).map((artifact) =>
+        this.artifactIdentityKey(artifact),
+      ),
     );
     const artifacts = payload.artifacts.filter((artifact) =>
       this.belongsToCurrentBuild(release, build, artifact),
@@ -3443,7 +5051,7 @@ export class LobsterReleaseRuntime {
         immutable: true,
         createdAt: nowIso(),
       };
-      this.store.insertArtifact(record);
+      await this.store.insertArtifactAsync(record);
       existingArtifactKeys.add(identityKey);
     }
     const skippedArtifacts = payload.artifacts.length - artifacts.length;
@@ -3452,7 +5060,7 @@ export class LobsterReleaseRuntime {
         `[lobster-release] filtered ${skippedArtifacts} stale artifact(s) for release ${release.version} build ${build.jenkinsBuildNumber ?? "unknown"}`,
       );
     }
-    const allArtifacts = this.store.listArtifactsForBuild(buildId);
+    const allArtifacts = await this.store.listArtifactsForBuildAsync(buildId);
     const patchValidation = await this.validatePatchArtifacts(release, build, allArtifacts);
     const artifactIntegrity = await this.validateArtifactIntegrity(release, build, allArtifacts);
     const smokeGate = this.evaluatePublishSmokeGate(release, build, allArtifacts, patchValidation);
@@ -3463,7 +5071,7 @@ export class LobsterReleaseRuntime {
       smokeGate,
     };
     if (((artifactIntegrity.errors as string[] | undefined) ?? []).length > 0) {
-      this.store.upsertBuild({
+      await this.store.upsertBuildAsync({
         ...build,
         reports: nextReports,
         updatedAt: nowIso(),
@@ -3473,7 +5081,7 @@ export class LobsterReleaseRuntime {
       );
     }
     if (smokeGate.passed !== true) {
-      this.store.upsertBuild({
+      await this.store.upsertBuildAsync({
         ...build,
         reports: nextReports,
         updatedAt: nowIso(),
@@ -3486,7 +5094,7 @@ export class LobsterReleaseRuntime {
       reports: nextReports,
       updatedAt: nowIso(),
     };
-    this.store.upsertBuild(updatedBuild);
+    await this.store.upsertBuildAsync(updatedBuild);
     const manifest = await this.generateManifest(release.releaseId, build.buildId);
     return { build: updatedBuild, manifest };
   }
@@ -3502,11 +5110,11 @@ export class LobsterReleaseRuntime {
       error?: unknown;
     },
   ): Promise<{ build: BuildRecord; release: ReleaseRecord }> {
-    const build = this.store.getBuild(buildId);
+    const build = await this.store.getBuildAsync(buildId);
     if (!build) {
       throw new Error(`build not found: ${buildId}`);
     }
-    const release = this.store.getRelease(build.releaseId);
+    const release = await this.store.getReleaseAsync(build.releaseId);
     if (!release) {
       throw new Error(`release not found: ${build.releaseId}`);
     }
@@ -3529,7 +5137,7 @@ export class LobsterReleaseRuntime {
       finishedAt: nowIso(),
       updatedAt: nowIso(),
     };
-    this.store.upsertBuild(nextBuild);
+    await this.store.upsertBuildAsync(nextBuild);
     const nextRelease: ReleaseRecord = {
       ...release,
       status:
@@ -3551,19 +5159,21 @@ export class LobsterReleaseRuntime {
           ? nowIso()
           : release.publishedAt,
     };
-    this.store.upsertRelease(nextRelease);
+    await this.store.upsertReleaseAsync(nextRelease);
     if (nextRelease.status === "published") {
-      this.publishChannelPointer(nextRelease, "auto-dev");
+      await this.publishChannelPointerAsync(nextRelease, "auto-dev");
       if (nextRelease.currentBuildId) {
         await this.generateManifest(nextRelease.releaseId, nextRelease.currentBuildId);
       }
-      this.archiveReleaseChangelog(nextRelease, "auto-dev", {
-        build: nextRelease.currentBuildId ? this.store.getBuild(nextRelease.currentBuildId) : null,
+      await this.archiveReleaseChangelogAsync(nextRelease, "auto-dev", {
+        build: nextRelease.currentBuildId
+          ? await this.store.getBuildAsync(nextRelease.currentBuildId)
+          : null,
         reason: "auto-publish-dev",
         summary: payload.summary,
       });
     }
-    const event = this.recordEvent({
+    const event = await this.recordEventAsync({
       projectId: release.projectId,
       projectKey: release.projectKey,
       environment: release.environment,
@@ -3573,7 +5183,7 @@ export class LobsterReleaseRuntime {
       payload: { summary: payload.summary ?? null, reports: payload.reports ?? null },
     });
     if (payload.status === "success" && nextRelease.status === "awaiting_approval") {
-      const approvalEvent = this.recordEvent({
+      const approvalEvent = await this.recordEventAsync({
         projectId: release.projectId,
         projectKey: release.projectKey,
         environment: release.environment,
@@ -3587,7 +5197,7 @@ export class LobsterReleaseRuntime {
           environment: release.environment,
         },
       });
-      this.queueNotification({
+      await this.queueNotificationAsync({
         event: approvalEvent,
         dedupeKey: `release.awaiting_approval:${release.releaseId}`,
         payload: {
@@ -3610,7 +5220,7 @@ export class LobsterReleaseRuntime {
       });
     }
     if (payload.status !== "success") {
-      this.queueNotification({
+      await this.queueNotificationAsync({
         event,
         dedupeKey: `${event.eventType}:${build.buildId}`,
         payload: {
@@ -3635,7 +5245,7 @@ export class LobsterReleaseRuntime {
       });
     }
     if (nextRelease.status === "published") {
-      const publishedEvent = this.recordEvent({
+      const publishedEvent = await this.recordEventAsync({
         projectId: release.projectId,
         projectKey: release.projectKey,
         environment: release.environment,
@@ -3649,7 +5259,7 @@ export class LobsterReleaseRuntime {
           environment: release.environment,
         },
       });
-      this.queueNotification({
+      await this.queueNotificationAsync({
         event: publishedEvent,
         dedupeKey: `release.published:${release.releaseId}`,
         payload: {
@@ -3678,23 +5288,23 @@ export class LobsterReleaseRuntime {
     operator = "system",
     options?: { allowActiveRollout?: boolean },
   ): Promise<ReleaseRecord> {
-    const release = this.store.getRelease(releaseId);
+    const release = await this.store.getReleaseAsync(releaseId);
     if (!release) {
       throw new Error(`release not found: ${releaseId}`);
     }
-    this.assertNoActiveRollback(
+    await this.assertNoActiveRollbackAsync(
       release.projectKey,
       release.environment,
       release.channel,
       "approve-release",
     );
     if (options?.allowActiveRollout !== true) {
-      this.assertNoBlockingRolloutForApproval(release);
+      await this.assertNoBlockingRolloutForApprovalAsync(release);
     }
     if (release.frozen) {
       throw new Error(`release is frozen: ${releaseId}`);
     }
-    this.acquireChannelLock({
+    await this.acquireChannelLockAsync({
       projectKey: release.projectKey,
       environment: release.environment,
       channel: release.channel,
@@ -3709,19 +5319,19 @@ export class LobsterReleaseRuntime {
         publishedAt: nowIso(),
         updatedAt: nowIso(),
       };
-      this.store.upsertRelease(next);
-      this.publishChannelPointer(next, operator);
+      await this.store.upsertReleaseAsync(next);
+      await this.publishChannelPointerAsync(next, operator);
       if (next.currentBuildId) {
         await this.generateManifest(next.releaseId, next.currentBuildId);
       }
-      const publishedRelease = this.store.getRelease(next.releaseId) ?? next;
-      this.archiveReleaseChangelog(publishedRelease, operator, {
+      const publishedRelease = (await this.store.getReleaseAsync(next.releaseId)) ?? next;
+      await this.archiveReleaseChangelogAsync(publishedRelease, operator, {
         build: publishedRelease.currentBuildId
-          ? this.store.getBuild(publishedRelease.currentBuildId)
+          ? await this.store.getBuildAsync(publishedRelease.currentBuildId)
           : null,
         reason: "approve",
       });
-      this.recordEvent({
+      await this.recordEventAsync({
         projectId: release.projectId,
         projectKey: release.projectKey,
         environment: release.environment,
@@ -3731,7 +5341,7 @@ export class LobsterReleaseRuntime {
         payload: { channel: release.channel },
         createdBy: operator,
       });
-      const publishedEvent = this.recordEvent({
+      const publishedEvent = await this.recordEventAsync({
         projectId: release.projectId,
         projectKey: release.projectKey,
         environment: release.environment,
@@ -3741,7 +5351,7 @@ export class LobsterReleaseRuntime {
         payload: { channel: release.channel, version: release.version },
         createdBy: operator,
       });
-      this.queueNotification({
+      await this.queueNotificationAsync({
         event: publishedEvent,
         dedupeKey: `release.published:${release.releaseId}`,
         payload: {
@@ -3759,7 +5369,7 @@ export class LobsterReleaseRuntime {
       });
       return publishedRelease;
     } finally {
-      this.releaseChannelLock(release.projectKey, release.environment, release.channel);
+      await this.releaseChannelLockAsync(release.projectKey, release.environment, release.channel);
     }
   }
 
@@ -3771,11 +5381,11 @@ export class LobsterReleaseRuntime {
     operator: string;
     notes?: string;
   }): Promise<ReleaseRecord> {
-    const source = this.store.getRelease(params.sourceReleaseId);
+    const source = await this.store.getReleaseAsync(params.sourceReleaseId);
     if (!source || source.projectKey !== params.projectKey) {
       throw new Error(`release not found: ${params.sourceReleaseId}`);
     }
-    this.assertNoActiveRollback(
+    await this.assertNoActiveRollbackAsync(
       params.projectKey,
       params.targetEnvironment,
       params.targetChannel,
@@ -3784,17 +5394,19 @@ export class LobsterReleaseRuntime {
     if (source.status !== "published" || !source.stable) {
       throw new Error("only stable published releases can be promoted");
     }
-    const blockingRollout = this.activeRolloutsForChannel(
-      source.projectKey,
-      source.environment,
-      source.channel,
+    const blockingRollout = (
+      await this.activeRolloutsForChannelAsync(
+        source.projectKey,
+        source.environment,
+        source.channel,
+      )
     ).find((rollout) => rollout.releaseId === source.releaseId);
     if (blockingRollout) {
       throw new Error(
         `rollout.in_progress: promote-release blocked by rollout ${blockingRollout.rolloutId}`,
       );
     }
-    this.acquireChannelLock({
+    await this.acquireChannelLockAsync({
       projectKey: params.projectKey,
       environment: params.targetEnvironment,
       channel: params.targetChannel,
@@ -3802,7 +5414,7 @@ export class LobsterReleaseRuntime {
       reason: "promote-release",
     });
     try {
-      const existing = this.findReleaseByVersion({
+      const existing = await this.findReleaseByVersionAsync({
         projectKey: params.projectKey,
         environment: params.targetEnvironment,
         channel: params.targetChannel,
@@ -3820,13 +5432,13 @@ export class LobsterReleaseRuntime {
           `target channel already has version ${source.version}: ${existing.releaseId}`,
         );
       }
-      const targetState = this.getChannelState(
+      const targetState = await this.getChannelStateAsync(
         params.projectKey,
         params.targetEnvironment,
         params.targetChannel,
       );
       const currentTargetRelease = targetState?.currentReleaseId
-        ? this.store.getRelease(targetState.currentReleaseId)
+        ? await this.store.getReleaseAsync(targetState.currentReleaseId)
         : null;
       const parsed = parseVersion(source.version);
       const now = nowIso();
@@ -3854,8 +5466,8 @@ export class LobsterReleaseRuntime {
           promotedAt: now,
         },
       };
-      this.store.upsertRelease(promoted);
-      this.store.insertReleaseRelation({
+      await this.store.upsertReleaseAsync(promoted);
+      await this.store.insertReleaseRelationAsync({
         relationId: createId("reln"),
         projectId: promoted.projectId,
         projectKey: promoted.projectKey,
@@ -3871,19 +5483,20 @@ export class LobsterReleaseRuntime {
         createdBy: params.operator,
         createdAt: now,
       });
-      this.publishChannelPointer(promoted, params.operator);
+      await this.publishChannelPointerAsync(promoted, params.operator);
       if (promoted.currentBuildId) {
         await this.generateManifest(promoted.releaseId, promoted.currentBuildId);
       }
-      const publishedPromotedRelease = this.store.getRelease(promoted.releaseId) ?? promoted;
-      this.archiveReleaseChangelog(publishedPromotedRelease, params.operator, {
+      const publishedPromotedRelease =
+        (await this.store.getReleaseAsync(promoted.releaseId)) ?? promoted;
+      await this.archiveReleaseChangelogAsync(publishedPromotedRelease, params.operator, {
         build: publishedPromotedRelease.currentBuildId
-          ? this.store.getBuild(publishedPromotedRelease.currentBuildId)
+          ? await this.store.getBuildAsync(publishedPromotedRelease.currentBuildId)
           : null,
         reason: "promote",
         sourceReleaseId: source.releaseId,
       });
-      this.recordEvent({
+      await this.recordEventAsync({
         projectId: publishedPromotedRelease.projectId,
         projectKey: publishedPromotedRelease.projectKey,
         environment: publishedPromotedRelease.environment,
@@ -3900,7 +5513,7 @@ export class LobsterReleaseRuntime {
         },
         createdBy: params.operator,
       });
-      const publishedEvent = this.recordEvent({
+      const publishedEvent = await this.recordEventAsync({
         projectId: publishedPromotedRelease.projectId,
         projectKey: publishedPromotedRelease.projectKey,
         environment: publishedPromotedRelease.environment,
@@ -3914,7 +5527,7 @@ export class LobsterReleaseRuntime {
         },
         createdBy: params.operator,
       });
-      this.queueNotification({
+      await this.queueNotificationAsync({
         event: publishedEvent,
         dedupeKey: `release.published:${publishedPromotedRelease.releaseId}`,
         payload: {
@@ -3933,7 +5546,11 @@ export class LobsterReleaseRuntime {
       });
       return publishedPromotedRelease;
     } finally {
-      this.releaseChannelLock(params.projectKey, params.targetEnvironment, params.targetChannel);
+      await this.releaseChannelLockAsync(
+        params.projectKey,
+        params.targetEnvironment,
+        params.targetChannel,
+      );
     }
   }
 
@@ -3979,15 +5596,69 @@ export class LobsterReleaseRuntime {
     }
   }
 
+  private async publishChannelPointerAsync(
+    release: ReleaseRecord,
+    operator: string,
+  ): Promise<void> {
+    const existing = await this.getChannelStateAsync(
+      release.projectKey,
+      release.environment,
+      release.channel,
+    );
+    const state: ChannelStateRecord = {
+      projectId: release.projectId,
+      projectKey: release.projectKey,
+      environment: release.environment,
+      channel: release.channel,
+      currentReleaseId: release.releaseId,
+      previousReleaseId:
+        existing?.currentReleaseId && existing.currentReleaseId !== release.releaseId
+          ? existing.currentReleaseId
+          : existing?.previousReleaseId,
+      updatedAt: nowIso(),
+      updatedBy: operator,
+    };
+    await this.store.upsertChannelStateAsync(state);
+    if (existing?.currentReleaseId && existing.currentReleaseId !== release.releaseId) {
+      const createdAt = nowIso();
+      await this.store.insertReleaseRelationAsync({
+        relationId: createId("reln"),
+        projectId: release.projectId,
+        projectKey: release.projectKey,
+        fromReleaseId: existing.currentReleaseId,
+        toReleaseId: release.releaseId,
+        relationType: "promoted_from",
+        context: { channel: release.channel, environment: release.environment },
+        createdBy: operator,
+        createdAt,
+      });
+      await this.store.insertReleaseRelationAsync({
+        relationId: createId("reln"),
+        projectId: release.projectId,
+        projectKey: release.projectKey,
+        fromReleaseId: existing.currentReleaseId,
+        toReleaseId: release.releaseId,
+        relationType: "replaced_by",
+        context: { channel: release.channel, environment: release.environment },
+        createdBy: operator,
+        createdAt,
+      });
+    }
+  }
+
   async createRollback(input: RollbackInput): Promise<RollbackOperationRecord> {
-    const channelState = this.getChannelState(input.projectKey, input.environment, input.channel);
+    const channelState = await this.getChannelStateAsync(
+      input.projectKey,
+      input.environment,
+      input.channel,
+    );
     if (!channelState?.currentReleaseId) {
       throw new Error(
         `no current release for ${input.projectKey}/${input.environment}/${input.channel}`,
       );
     }
-    const fromRelease = this.store.getRelease(channelState.currentReleaseId);
-    const toRelease = this.store.getRelease(input.targetReleaseId);
+    const fromRelease = await this.store.getReleaseAsync(channelState.currentReleaseId);
+    const toRelease = await this.store.getReleaseAsync(input.targetReleaseId);
     if (!fromRelease || !toRelease) {
       throw new Error("rollback target or source release not found");
     }
@@ -4016,21 +5687,21 @@ export class LobsterReleaseRuntime {
       },
       createdAt: nowIso(),
     };
-    this.store.upsertRollback(rollback);
+    await this.store.upsertRollbackAsync(rollback);
     return rollback;
   }
 
   async approveRollback(rollbackId: string, approver: string): Promise<RollbackOperationRecord> {
-    const rollback = this.store.getRollback(rollbackId);
+    const rollback = await this.store.getRollbackAsync(rollbackId);
     if (!rollback) {
       throw new Error(`rollback not found: ${rollbackId}`);
     }
-    const current = this.store.getRelease(rollback.fromReleaseId);
-    const target = this.store.getRelease(rollback.toReleaseId);
+    const current = await this.store.getReleaseAsync(rollback.fromReleaseId);
+    const target = await this.store.getReleaseAsync(rollback.toReleaseId);
     if (!current || !target) {
       throw new Error("rollback release records missing");
     }
-    this.acquireChannelLock({
+    await this.acquireChannelLockAsync({
       projectKey: rollback.projectKey,
       environment: rollback.environment,
       channel: rollback.channel,
@@ -4043,20 +5714,20 @@ export class LobsterReleaseRuntime {
         status: "executing",
         approvedBy: approver,
       };
-      this.store.upsertRollback(executing);
-      const canceledRollouts = this.markRolloutsCanceled(
+      await this.store.upsertRollbackAsync(executing);
+      const canceledRollouts = await this.markRolloutsCanceledAsync(
         rollback.projectKey,
         rollback.environment,
         rollback.channel,
         approver,
         `rollback:${rollbackId}`,
       );
-      const stateBefore = this.getChannelState(
+      const stateBefore = await this.getChannelStateAsync(
         rollback.projectKey,
         rollback.environment,
         rollback.channel,
       );
-      this.store.upsertChannelState({
+      await this.store.upsertChannelStateAsync({
         projectId: current.projectId,
         projectKey: rollback.projectKey,
         environment: rollback.environment,
@@ -4066,13 +5737,13 @@ export class LobsterReleaseRuntime {
         updatedAt: nowIso(),
         updatedBy: approver,
       });
-      this.store.upsertRelease({
+      await this.store.upsertReleaseAsync({
         ...current,
         status: "rolled_back",
         frozen: rollback.freezeCurrentRelease ? true : current.frozen,
         updatedAt: nowIso(),
       });
-      this.store.upsertRelease({
+      await this.store.upsertReleaseAsync({
         ...target,
         status: "published",
         stable: true,
@@ -4081,7 +5752,7 @@ export class LobsterReleaseRuntime {
       if (target.currentBuildId) {
         await this.generateManifest(target.releaseId, target.currentBuildId);
       }
-      this.store.insertReleaseRelation({
+      await this.store.insertReleaseRelationAsync({
         relationId: createId("reln"),
         projectId: current.projectId,
         projectKey: rollback.projectKey,
@@ -4092,7 +5763,7 @@ export class LobsterReleaseRuntime {
         createdBy: approver,
         createdAt: nowIso(),
       });
-      const stateAfter = this.getChannelState(
+      const stateAfter = await this.getChannelStateAsync(
         rollback.projectKey,
         rollback.environment,
         rollback.channel,
@@ -4112,8 +5783,8 @@ export class LobsterReleaseRuntime {
         },
         completedAt: nowIso(),
       };
-      this.store.upsertRollback(completed);
-      this.recordEvent({
+      await this.store.upsertRollbackAsync(completed);
+      await this.recordEventAsync({
         projectId: current.projectId,
         projectKey: rollback.projectKey,
         environment: rollback.environment,
@@ -4123,7 +5794,7 @@ export class LobsterReleaseRuntime {
         payload: { rollbackId, targetReleaseId: target.releaseId },
         createdBy: approver,
       });
-      const rollbackEvent = this.recordEvent({
+      const rollbackEvent = await this.recordEventAsync({
         projectId: current.projectId,
         projectKey: rollback.projectKey,
         environment: rollback.environment,
@@ -4139,7 +5810,7 @@ export class LobsterReleaseRuntime {
         },
         createdBy: approver,
       });
-      this.queueNotification({
+      await this.queueNotificationAsync({
         event: rollbackEvent,
         dedupeKey: `rollback.completed:${rollbackId}`,
         payload: {
@@ -4162,12 +5833,16 @@ export class LobsterReleaseRuntime {
       });
       return completed;
     } finally {
-      this.releaseChannelLock(rollback.projectKey, rollback.environment, rollback.channel);
+      await this.releaseChannelLockAsync(
+        rollback.projectKey,
+        rollback.environment,
+        rollback.channel,
+      );
     }
   }
 
-  cancelRollback(rollbackId: string): RollbackOperationRecord {
-    const rollback = this.store.getRollback(rollbackId);
+  async cancelRollback(rollbackId: string): Promise<RollbackOperationRecord> {
+    const rollback = await this.store.getRollbackAsync(rollbackId);
     if (!rollback) {
       throw new Error(`rollback not found: ${rollbackId}`);
     }
@@ -4176,7 +5851,7 @@ export class LobsterReleaseRuntime {
       status: "canceled",
       completedAt: nowIso(),
     };
-    this.store.upsertRollback(next);
+    await this.store.upsertRollbackAsync(next);
     return next;
   }
 
@@ -4227,6 +5902,53 @@ export class LobsterReleaseRuntime {
     };
   }
 
+  async resolveCiBaselineAsync(request: CiBuildRequest): Promise<{
+    strategy: "incremental" | "full";
+    baselineVersion: string;
+    baselineManifestUrl: string;
+    baselinePackageUrl: string;
+    baselineSha256: string;
+  }> {
+    const targets = this.buildTargetsFromCi(request);
+    if (!targets.patch) {
+      return {
+        strategy: "full",
+        baselineVersion: "",
+        baselineManifestUrl: "",
+        baselinePackageUrl: "",
+        baselineSha256: "",
+      };
+    }
+    const projectKey = this.normalizeCiProjectKey(request.app?.projectKey);
+    const baseline = await this.resolveBaselineAsync({
+      projectKey,
+      environment: this.normalizeCiEnvironment(request.app?.environment, projectKey),
+      channel: this.normalizeCiChannel(request.app?.channel, projectKey),
+      targetVersion: this.versionFromCi(request),
+      platform: this.platformFromCi(request, targets),
+    });
+    if (!baseline || baseline.compatibilityRule !== "reuse") {
+      return {
+        strategy: "full",
+        baselineVersion: "",
+        baselineManifestUrl: "",
+        baselinePackageUrl: "",
+        baselineSha256: "",
+      };
+    }
+    const baselineRelease = baseline.fromReleaseId
+      ? await this.store.getReleaseAsync(baseline.fromReleaseId)
+      : null;
+    const baselineBundle = baselineRelease ? this.baselinePackageForRelease(baselineRelease) : null;
+    return {
+      strategy: "incremental",
+      baselineVersion: baseline.fromVersion,
+      baselineManifestUrl: baseline.baselineManifestUrl,
+      baselinePackageUrl: baselineBundle?.downloadUrl ?? "",
+      baselineSha256: baselineBundle?.sha256 ?? "",
+    };
+  }
+
   recordCiBuildStart(request: CiBuildRequest): BuildRecord {
     const { build, release } = this.ensureCiBuild(request);
     const next = this.recordBuildStart(build.buildId, {
@@ -4253,11 +5975,37 @@ export class LobsterReleaseRuntime {
     return next;
   }
 
+  async recordCiBuildStartAsync(request: CiBuildRequest): Promise<BuildRecord> {
+    const { build, release } = await this.ensureCiBuildAsync(request);
+    const next = await this.recordBuildStartAsync(build.buildId, {
+      jenkinsJob: request.jobName?.trim() || build.jenkinsJob,
+      jenkinsBuildNumber: this.parseCiBuildNumber(request.buildNumber) ?? build.jenkinsBuildNumber,
+      startedAt: nowIso(),
+    });
+    await this.upsertCiProvenanceAsync(next, request);
+    await this.recordEventAsync({
+      projectId: release.projectId,
+      projectKey: release.projectKey,
+      environment: release.environment,
+      objectType: "build",
+      objectId: next.buildId,
+      eventType: "ci.build.started",
+      requestId: request.requestId,
+      payload: {
+        jobName: request.jobName,
+        buildNumber: request.buildNumber,
+        pipelineUrl: request.pipelineUrl,
+      },
+      createdBy: "jenkins-ci",
+    });
+    return next;
+  }
+
   async recordCiBuildPublish(
     request: CiPublishRequest,
   ): Promise<{ build: BuildRecord; manifest: ReleaseManifest }> {
-    const { build, release } = this.ensureCiBuild(request);
-    this.upsertCiProvenance(build, request);
+    const { build, release } = await this.ensureCiBuildAsync(request);
+    await this.upsertCiProvenanceAsync(build, request);
     const result = await this.recordBuildPublish(build.buildId, {
       environment: release.environment,
       channel: release.channel,
@@ -4272,8 +6020,8 @@ export class LobsterReleaseRuntime {
         ...request.reports,
       },
     };
-    this.store.upsertBuild(nextBuild);
-    this.recordEvent({
+    await this.store.upsertBuildAsync(nextBuild);
+    await this.recordEventAsync({
       projectId: release.projectId,
       projectKey: release.projectKey,
       environment: release.environment,
@@ -4292,8 +6040,8 @@ export class LobsterReleaseRuntime {
   async recordCiBuildFinish(
     request: CiFinishRequest,
   ): Promise<{ build: BuildRecord; release: ReleaseRecord }> {
-    const { build, release } = this.ensureCiBuild(request);
-    this.upsertCiProvenance(build, request);
+    const { build, release } = await this.ensureCiBuildAsync(request);
+    await this.upsertCiProvenanceAsync(build, request);
     const status =
       request.result?.toUpperCase() === "SUCCESS"
         ? "success"
@@ -4312,7 +6060,7 @@ export class LobsterReleaseRuntime {
         pipelineUrl: request.pipelineUrl,
       },
     });
-    this.recordEvent({
+    await this.recordEventAsync({
       projectId: release.projectId,
       projectKey: release.projectKey,
       environment: release.environment,
@@ -4358,6 +6106,34 @@ export class LobsterReleaseRuntime {
     };
   }
 
+  async getReleaseGraphAsync(
+    projectKey: string,
+    releaseId: string,
+  ): Promise<{
+    releaseId: string;
+    nodes: ReleaseRecord[];
+    edges: ReleaseRelationRecord[];
+  }> {
+    const base = await this.store.getReleaseAsync(releaseId);
+    if (!base || base.projectKey !== projectKey) {
+      throw new Error(`release not found: ${releaseId}`);
+    }
+    const edges = await this.store.listReleaseRelationsAsync(projectKey, releaseId);
+    const nodeIds = new Set<string>([releaseId]);
+    for (const edge of edges) {
+      nodeIds.add(edge.fromReleaseId);
+      nodeIds.add(edge.toReleaseId);
+    }
+    const nodes = (
+      await Promise.all([...nodeIds].map((id) => this.store.getReleaseAsync(id)))
+    ).filter((item): item is ReleaseRecord => Boolean(item));
+    return {
+      releaseId,
+      nodes,
+      edges,
+    };
+  }
+
   getChannelGraph(projectKey: string, environment: ReleaseEnvironment, channel: ReleaseChannel) {
     const releases = this.store.listReleases({ projectKey, environment, channel });
     const ids = new Set(releases.map((release) => release.releaseId));
@@ -4370,6 +6146,28 @@ export class LobsterReleaseRuntime {
     return { nodes: releases, edges };
   }
 
+  async getChannelGraphAsync(
+    projectKey: string,
+    environment: ReleaseEnvironment,
+    channel: ReleaseChannel,
+  ): Promise<{ nodes: ReleaseRecord[]; edges: ReleaseRelationRecord[] }> {
+    const releases = await this.store.listReleasesAsync({ projectKey, environment, channel });
+    const ids = new Set(releases.map((release) => release.releaseId));
+    const edgeGroups = await Promise.all(
+      releases.map((release) =>
+        this.store.listReleaseRelationsAsync(projectKey, release.releaseId),
+      ),
+    );
+    const edges = edgeGroups
+      .flat()
+      .filter(
+        (edge, index, all) =>
+          all.findIndex((item) => item.relationId === edge.relationId) === index,
+      )
+      .filter((edge) => ids.has(edge.fromReleaseId) || ids.has(edge.toReleaseId));
+    return { nodes: releases, edges };
+  }
+
   getBuildProvenance(buildId: string) {
     const record = this.store.getBuildProvenance(buildId);
     if (!record) {
@@ -4378,8 +6176,21 @@ export class LobsterReleaseRuntime {
     return record;
   }
 
+  async getBuildProvenanceAsync(buildId: string): Promise<BuildProvenanceRecord> {
+    const record = await this.store.getBuildProvenanceAsync(buildId);
+    if (!record) {
+      throw new Error(`provenance not found for build: ${buildId}`);
+    }
+    return record;
+  }
+
   getReleaseProvenance(releaseId: string, mode: "latest" | "all" = "latest") {
     const records = this.store.listReleaseProvenance(releaseId);
+    return mode === "latest" ? (records[0] ?? null) : records;
+  }
+
+  async getReleaseProvenanceAsync(releaseId: string, mode: "latest" | "all" = "latest") {
+    const records = await this.store.listReleaseProvenanceAsync(releaseId);
     return mode === "latest" ? (records[0] ?? null) : records;
   }
 
@@ -4435,6 +6246,43 @@ export class LobsterReleaseRuntime {
     return protectedIds;
   }
 
+  private async protectedReleaseIdsForMaintenanceAsync(projectKey: string): Promise<Set<string>> {
+    const releases = await this.store.listReleasesAsync({ projectKey });
+    const protectedIds = new Set<string>();
+    for (const release of releases) {
+      if (release.frozen) {
+        protectedIds.add(release.releaseId);
+      }
+    }
+    const groupKeys = new Set(
+      releases.map((release) => `${release.environment}:${release.channel}`),
+    );
+    for (const groupKey of groupKeys) {
+      const [environment, channel] = groupKey.split(":");
+      const channelState = await this.getChannelStateAsync(
+        projectKey,
+        environment as ReleaseEnvironment,
+        channel as ReleaseChannel,
+      );
+      if (channelState?.currentReleaseId) {
+        protectedIds.add(channelState.currentReleaseId);
+      }
+      if (channelState?.previousReleaseId) {
+        protectedIds.add(channelState.previousReleaseId);
+      }
+      const recentStable = await this.listStableReleasesAsync({
+        projectKey,
+        environment: environment as ReleaseEnvironment,
+        channel: channel as ReleaseChannel,
+        limit: this.config.maintenanceKeepStableCount,
+      });
+      for (const release of recentStable) {
+        protectedIds.add(release.releaseId);
+      }
+    }
+    return protectedIds;
+  }
+
   getStoreStatus(projectKey = this.config.defaultProjectKey): {
     schema: ReturnType<LobsterReleaseStore["getSchemaInfo"]>;
     counts: {
@@ -4453,6 +6301,41 @@ export class LobsterReleaseRuntime {
     const releases = this.store.listReleases({ projectKey });
     const builds = this.store.listBuilds({ projectKey });
     const notifications = this.store.listNotifications();
+    return {
+      schema: this.store.getSchemaInfo(),
+      counts: {
+        releases: releases.length,
+        builds: builds.length,
+        notifications: notifications.length,
+        failedNotifications: notifications.filter((item) => item.status === "failed").length,
+        stableReleases: releases.filter((item) => item.stable).length,
+      },
+      retention: {
+        artifactRetentionDays: this.config.artifactRetentionDays,
+        auditRetentionDays: this.config.auditRetentionDays,
+        maintenanceKeepStableCount: this.config.maintenanceKeepStableCount,
+      },
+    };
+  }
+
+  async getStoreStatusAsync(projectKey = this.config.defaultProjectKey): Promise<{
+    schema: ReturnType<LobsterReleaseStore["getSchemaInfo"]>;
+    counts: {
+      releases: number;
+      builds: number;
+      notifications: number;
+      failedNotifications: number;
+      stableReleases: number;
+    };
+    retention: {
+      artifactRetentionDays: number;
+      auditRetentionDays: number;
+      maintenanceKeepStableCount: number;
+    };
+  }> {
+    const releases = await this.store.listReleasesAsync({ projectKey });
+    const builds = await this.store.listBuildsAsync({ projectKey });
+    const notifications = await this.store.listNotificationsAsync();
     return {
       schema: this.store.getSchemaInfo(),
       counts: {
@@ -4561,7 +6444,7 @@ export class LobsterReleaseRuntime {
   }
 
   async createRollout(input: CreateRolloutInput): Promise<RolloutRecord> {
-    const release = this.store.getRelease(input.releaseId);
+    const release = await this.store.getReleaseAsync(input.releaseId);
     if (!release || release.projectKey !== input.projectKey) {
       throw new Error(`release not found: ${input.releaseId}`);
     }
@@ -4577,8 +6460,13 @@ export class LobsterReleaseRuntime {
       throw new Error("rollout release is missing current build");
     }
     this.assertProjectScope(input.projectKey, environment, channel, input.scope);
-    this.assertNoActiveRollback(input.projectKey, environment, channel, "create-rollout");
-    this.assertNoConflictingRollout({
+    await this.assertNoActiveRollbackAsync(
+      input.projectKey,
+      environment,
+      channel,
+      "create-rollout",
+    );
+    await this.assertNoConflictingRolloutAsync({
       projectKey: input.projectKey,
       environment,
       channel,
@@ -4586,7 +6474,7 @@ export class LobsterReleaseRuntime {
       audience: input.scope?.audience,
       releaseId: input.releaseId,
     });
-    const project = this.ensureProject(input.projectKey);
+    const project = await this.ensureProjectAsync(input.projectKey);
     const policy = this.getProjectPolicy(input.projectKey);
     if (!policy.grayRelease.enabled) {
       throw new Error(`gray rollout is not enabled for project: ${input.projectKey}`);
@@ -4619,8 +6507,8 @@ export class LobsterReleaseRuntime {
         },
       },
     };
-    this.store.upsertRollout(rollout);
-    const createdEvent = this.recordEvent({
+    await this.store.upsertRolloutAsync(rollout);
+    const createdEvent = await this.recordEventAsync({
       projectId: project.projectId,
       projectKey: input.projectKey,
       environment,
@@ -4635,11 +6523,11 @@ export class LobsterReleaseRuntime {
       },
       createdBy: rollout.createdBy,
     });
-    this.queueRolloutNotification({
+    await this.queueRolloutNotificationAsync({
       event: createdEvent,
       dedupeKey: `rollout.created:${rollout.rolloutId}`,
       rollout,
-      release: this.store.getRelease(rollout.releaseId),
+      release: await this.store.getReleaseAsync(rollout.releaseId),
       summary: `Rollout created at ${rollout.trafficPercent}%`,
       action: "create",
     });
@@ -4647,20 +6535,20 @@ export class LobsterReleaseRuntime {
   }
 
   async advanceRollout(input: AdvanceRolloutInput): Promise<RolloutRecord> {
-    const rollout = this.store.getRollout(input.rolloutId);
+    const rollout = await this.store.getRolloutAsync(input.rolloutId);
     if (!rollout || rollout.projectKey !== input.projectKey) {
       throw new Error(`rollout not found: ${input.rolloutId}`);
     }
     if (rollout.status === "canceled" || rollout.status === "completed") {
       throw new Error(`rollout is terminal: ${rollout.rolloutId}`);
     }
-    this.assertNoActiveRollback(
+    await this.assertNoActiveRollbackAsync(
       rollout.projectKey,
       rollout.environment,
       rollout.channel,
       "advance-rollout",
     );
-    this.acquireChannelLock({
+    await this.acquireChannelLockAsync({
       projectKey: rollout.projectKey,
       environment: rollout.environment,
       channel: rollout.channel,
@@ -4685,11 +6573,11 @@ export class LobsterReleaseRuntime {
       },
     };
     try {
-      this.store.upsertRollout(next);
+      await this.store.upsertRolloutAsync(next);
     } finally {
-      this.releaseChannelLock(rollout.projectKey, rollout.environment, rollout.channel);
+      await this.releaseChannelLockAsync(rollout.projectKey, rollout.environment, rollout.channel);
     }
-    const release = this.store.getRelease(rollout.releaseId);
+    const release = await this.store.getReleaseAsync(rollout.releaseId);
     if (
       (input.publishRelease === true || next.trafficPercent >= 100) &&
       release &&
@@ -4699,7 +6587,7 @@ export class LobsterReleaseRuntime {
         allowActiveRollout: true,
       });
     }
-    const rolloutEvent = this.recordEvent({
+    const rolloutEvent = await this.recordEventAsync({
       projectId: rollout.projectId,
       projectKey: rollout.projectKey,
       environment: rollout.environment,
@@ -4713,12 +6601,12 @@ export class LobsterReleaseRuntime {
       },
       createdBy: input.operator ?? "system",
     });
-    const latest = this.store.getRollout(rollout.rolloutId) ?? next;
-    this.queueRolloutNotification({
+    const latest = (await this.store.getRolloutAsync(rollout.rolloutId)) ?? next;
+    await this.queueRolloutNotificationAsync({
       event: rolloutEvent,
       dedupeKey: `${rolloutEvent.eventType}:${latest.rolloutId}:${latest.trafficPercent}`,
       rollout: latest,
-      release: this.store.getRelease(latest.releaseId),
+      release: await this.store.getReleaseAsync(latest.releaseId),
       summary:
         latest.status === "completed"
           ? `Rollout completed at ${latest.trafficPercent}%`
@@ -4728,8 +6616,8 @@ export class LobsterReleaseRuntime {
     return latest;
   }
 
-  cancelRollout(input: CancelRolloutInput): RolloutRecord {
-    const rollout = this.store.getRollout(input.rolloutId);
+  async cancelRollout(input: CancelRolloutInput): Promise<RolloutRecord> {
+    const rollout = await this.store.getRolloutAsync(input.rolloutId);
     if (!rollout || rollout.projectKey !== input.projectKey) {
       throw new Error(`rollout not found: ${input.rolloutId}`);
     }
@@ -4749,8 +6637,8 @@ export class LobsterReleaseRuntime {
         canceledReason: input.reason,
       },
     };
-    this.store.upsertRollout(next);
-    const canceledEvent = this.recordEvent({
+    await this.store.upsertRolloutAsync(next);
+    const canceledEvent = await this.recordEventAsync({
       projectId: rollout.projectId,
       projectKey: rollout.projectKey,
       environment: rollout.environment,
@@ -4763,11 +6651,11 @@ export class LobsterReleaseRuntime {
       },
       createdBy: input.operator ?? "system",
     });
-    this.queueRolloutNotification({
+    await this.queueRolloutNotificationAsync({
       event: canceledEvent,
       dedupeKey: `rollout.canceled:${next.rolloutId}:${next.updatedAt}`,
       rollout: next,
-      release: this.store.getRelease(next.releaseId),
+      release: await this.store.getReleaseAsync(next.releaseId),
       summary: "Rollout canceled",
       reason: input.reason,
       action: "cancel",
@@ -4790,6 +6678,30 @@ export class LobsterReleaseRuntime {
       release: this.store.getRelease(rollout.releaseId),
       routeEligible: ROUTABLE_ROLLOUT_STATUSES.has(rollout.status),
       status: this.buildRolloutHealthStatus(rollout, {
+        publishRelease: params.publishRelease,
+      }),
+    };
+  }
+
+  async getRolloutStatusAsync(params: {
+    projectKey: string;
+    rolloutId: string;
+    publishRelease?: boolean;
+  }): Promise<{
+    rollout: RolloutRecord;
+    release: ReleaseRecord | null;
+    routeEligible: boolean;
+    status: RolloutHealthStatus;
+  }> {
+    const rollout = await this.store.getRolloutAsync(params.rolloutId);
+    if (!rollout || rollout.projectKey !== params.projectKey) {
+      throw new Error(`rollout not found: ${params.rolloutId}`);
+    }
+    return {
+      rollout,
+      release: await this.store.getReleaseAsync(rollout.releaseId),
+      routeEligible: ROUTABLE_ROLLOUT_STATUSES.has(rollout.status),
+      status: await this.buildRolloutHealthStatusAsync(rollout, {
         publishRelease: params.publishRelease,
       }),
     };
@@ -4887,24 +6799,117 @@ export class LobsterReleaseRuntime {
     };
   }
 
+  async recordRolloutObservationAsync(input: RecordRolloutObservationInput): Promise<{
+    rollout: RolloutRecord;
+    observation: RolloutObservationRecord;
+    status: RolloutHealthStatus;
+  }> {
+    const rollout = await this.store.getRolloutAsync(input.rolloutId);
+    if (!rollout || rollout.projectKey !== input.projectKey) {
+      throw new Error(`rollout not found: ${input.rolloutId}`);
+    }
+    if (rollout.status === "canceled" || rollout.status === "completed") {
+      throw new Error(`rollout is terminal: ${rollout.rolloutId}`);
+    }
+    const successCount =
+      typeof input.successCount === "number" && Number.isFinite(input.successCount)
+        ? Math.max(0, Math.trunc(input.successCount))
+        : 0;
+    const errorCount =
+      typeof input.errorCount === "number" && Number.isFinite(input.errorCount)
+        ? Math.max(0, Math.trunc(input.errorCount))
+        : 0;
+    const crashCount =
+      typeof input.crashCount === "number" && Number.isFinite(input.crashCount)
+        ? Math.max(0, Math.trunc(input.crashCount))
+        : 0;
+    const sampleSize =
+      typeof input.sampleSize === "number" && Number.isFinite(input.sampleSize)
+        ? Math.max(0, Math.trunc(input.sampleSize))
+        : successCount + errorCount + crashCount;
+    if (sampleSize <= 0) {
+      throw new Error("rollout observation requires a positive sampleSize or counts");
+    }
+    if (successCount + errorCount + crashCount > sampleSize) {
+      throw new Error("rollout observation counts exceed sampleSize");
+    }
+    const observation: RolloutObservationRecord = {
+      observedAt:
+        typeof input.observedAt === "string" && input.observedAt ? input.observedAt : nowIso(),
+      source: input.source,
+      notes: input.notes,
+      sampleSize,
+      successCount,
+      errorCount,
+      crashCount,
+      latencyP95Ms:
+        typeof input.latencyP95Ms === "number" && Number.isFinite(input.latencyP95Ms)
+          ? input.latencyP95Ms
+          : undefined,
+    };
+    this.recordEvent({
+      projectId: rollout.projectId,
+      projectKey: rollout.projectKey,
+      environment: rollout.environment,
+      objectType: "rollout",
+      objectId: rollout.rolloutId,
+      eventType: "rollout.observed",
+      payload: {
+        observedAt: observation.observedAt,
+        source: observation.source,
+        notes: observation.notes,
+        sampleSize: observation.sampleSize,
+        successCount: observation.successCount,
+        errorCount: observation.errorCount,
+        crashCount: observation.crashCount,
+        latencyP95Ms: observation.latencyP95Ms,
+      },
+      createdBy: input.operator ?? "system",
+    });
+    const now = nowIso();
+    const nextRollout: RolloutRecord = {
+      ...rollout,
+      updatedAt: now,
+      metadata: {
+        ...asRecord(rollout.metadata),
+        monitoring: {
+          latestObservationAt: observation.observedAt,
+          latestSource: observation.source,
+          latestSampleSize: observation.sampleSize,
+          latestSuccessCount: observation.successCount,
+          latestErrorCount: observation.errorCount,
+          latestCrashCount: observation.crashCount,
+          latestLatencyP95Ms: observation.latencyP95Ms,
+        },
+      },
+    };
+    await this.store.upsertRolloutAsync(nextRollout);
+    const latestRollout = (await this.store.getRolloutAsync(rollout.rolloutId)) ?? nextRollout;
+    return {
+      rollout: latestRollout,
+      observation,
+      status: await this.buildRolloutHealthStatusAsync(latestRollout),
+    };
+  }
+
   async evaluateRollout(input: EvaluateRolloutInput): Promise<{
     rollout: RolloutRecord;
     release: ReleaseRecord | null;
     status: RolloutHealthStatus;
     appliedAction?: RolloutHealthStatus["autoAction"];
   }> {
-    const rollout = this.store.getRollout(input.rolloutId);
+    const rollout = await this.store.getRolloutAsync(input.rolloutId);
     if (!rollout || rollout.projectKey !== input.projectKey) {
       throw new Error(`rollout not found: ${input.rolloutId}`);
     }
     const publishRelease = input.publishRelease !== false;
     let latestRollout = rollout;
-    const status = this.buildRolloutHealthStatus(rollout, { publishRelease });
+    const status = await this.buildRolloutHealthStatusAsync(rollout, { publishRelease });
     let appliedAction: RolloutHealthStatus["autoAction"];
     if (input.autoApply === true && status.autoAction) {
       const action = status.autoAction;
       if (action.type === "pause") {
-        latestRollout = this.store.getRollout(rollout.rolloutId) ?? rollout;
+        latestRollout = (await this.store.getRolloutAsync(rollout.rolloutId)) ?? rollout;
         const now = nowIso();
         const paused: RolloutRecord = {
           ...latestRollout,
@@ -4917,9 +6922,9 @@ export class LobsterReleaseRuntime {
             lastHealth: status,
           },
         };
-        this.store.upsertRollout(paused);
+        await this.store.upsertRolloutAsync(paused);
         latestRollout = paused;
-        const pausedEvent = this.recordEvent({
+        const pausedEvent = await this.recordEventAsync({
           projectId: paused.projectId,
           projectKey: paused.projectKey,
           environment: paused.environment,
@@ -4932,18 +6937,18 @@ export class LobsterReleaseRuntime {
           },
           createdBy: input.operator ?? "system",
         });
-        this.queueRolloutNotification({
+        await this.queueRolloutNotificationAsync({
           event: pausedEvent,
           dedupeKey: `rollout.paused:${paused.rolloutId}:${paused.updatedAt}`,
           rollout: paused,
-          release: this.store.getRelease(paused.releaseId),
+          release: await this.store.getReleaseAsync(paused.releaseId),
           summary: "Rollout paused by circuit breaker",
           reason: action.reason,
           action: "pause",
           status,
         });
       } else if (action.type === "cancel") {
-        latestRollout = this.cancelRollout({
+        latestRollout = await this.cancelRollout({
           projectKey: rollout.projectKey,
           rolloutId: rollout.rolloutId,
           operator: input.operator ?? "system",
@@ -4961,10 +6966,10 @@ export class LobsterReleaseRuntime {
       }
       appliedAction = action;
     }
-    const latestStatus = this.buildRolloutHealthStatus(latestRollout, {
+    const latestStatus = await this.buildRolloutHealthStatusAsync(latestRollout, {
       publishRelease,
     });
-    this.recordEvent({
+    await this.recordEventAsync({
       projectId: latestRollout.projectId,
       projectKey: latestRollout.projectKey,
       environment: latestRollout.environment,
@@ -4980,7 +6985,7 @@ export class LobsterReleaseRuntime {
     });
     return {
       rollout: latestRollout,
-      release: this.store.getRelease(latestRollout.releaseId),
+      release: await this.store.getReleaseAsync(latestRollout.releaseId),
       status: latestStatus,
       appliedAction,
     };
@@ -4995,7 +7000,7 @@ export class LobsterReleaseRuntime {
   }> {
     let observation: RolloutObservationRecord | undefined;
     if (input.observation) {
-      const recorded = this.recordRolloutObservation({
+      const recorded = await this.recordRolloutObservationAsync({
         projectKey: input.projectKey,
         rolloutId: input.rolloutId,
         operator: input.operator,
@@ -5035,15 +7040,15 @@ export class LobsterReleaseRuntime {
       appliedAction?: RolloutHealthStatus["autoAction"];
     }>;
   }> {
-    const rollouts = this.store
-      .listRollouts({
+    const rollouts = (
+      await this.store.listRolloutsAsync({
         projectKey: input.projectKey,
         environment: input.environment,
         channel: input.channel,
         statuses: ["active"],
         limit: input.limit,
       })
-      .filter((rollout) => rollout.status === "active");
+    ).filter((rollout) => rollout.status === "active");
     const results: Array<{
       rolloutId: string;
       status: RolloutRecord["status"];
@@ -5151,6 +7156,86 @@ export class LobsterReleaseRuntime {
     };
   }
 
+  async resolveChannelRouteAsync(params: {
+    projectKey: string;
+    environment?: ReleaseEnvironment;
+    channel?: ReleaseChannel;
+    region?: string;
+    audience?: string;
+    bucketValue?: number;
+    subjectKey?: string;
+  }): Promise<{
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    route: "rollout" | "channel";
+    bucket: number;
+    selectedRelease: ReleaseRecord | null;
+    selectedManifestUrl?: string;
+    activeRollouts: Array<{
+      rollout: RolloutRecord;
+      release: ReleaseRecord | null;
+      matched: boolean;
+    }>;
+    fallbackRelease: ReleaseRecord | null;
+  }> {
+    const environment = this.resolveProjectEnvironment(params.projectKey, params.environment);
+    const channel = this.resolveProjectChannel(params.projectKey, params.channel);
+    this.assertProjectScope(params.projectKey, environment, channel, {
+      region: params.region,
+      audience: params.audience,
+    });
+    const fallbackState = await this.getChannelStateAsync(params.projectKey, environment, channel);
+    const fallbackRelease = fallbackState?.currentReleaseId
+      ? await this.store.getReleaseAsync(fallbackState.currentReleaseId)
+      : null;
+    const bucket =
+      typeof params.bucketValue === "number" &&
+      Number.isFinite(params.bucketValue) &&
+      params.bucketValue >= 0 &&
+      params.bucketValue < 100
+        ? Math.trunc(params.bucketValue)
+        : this.rolloutBucket(
+            params.subjectKey ??
+              [
+                params.projectKey,
+                environment,
+                channel,
+                params.region ?? "",
+                params.audience ?? "",
+              ].join(":"),
+          );
+    const candidates = await this.matchingRolloutsForRouteAsync({
+      projectKey: params.projectKey,
+      environment,
+      channel,
+      region: params.region,
+      audience: params.audience,
+    });
+    const selectedRollout = candidates.find((rollout) => bucket < rollout.trafficPercent);
+    const selectedRelease = selectedRollout
+      ? await this.store.getReleaseAsync(selectedRollout.releaseId)
+      : fallbackRelease;
+    const activeRollouts = await Promise.all(
+      candidates.map(async (rollout) => ({
+        rollout,
+        release: await this.store.getReleaseAsync(rollout.releaseId),
+        matched: selectedRollout?.rolloutId === rollout.rolloutId,
+      })),
+    );
+    return {
+      projectKey: params.projectKey,
+      environment,
+      channel,
+      route: selectedRollout ? "rollout" : "channel",
+      bucket,
+      selectedRelease,
+      selectedManifestUrl: selectedRelease?.manifestUrl,
+      activeRollouts,
+      fallbackRelease,
+    };
+  }
+
   async runMaintenance(params?: { projectKey?: string; dryRun?: boolean }): Promise<{
     projectKey: string;
     dryRun: boolean;
@@ -5178,23 +7263,24 @@ export class LobsterReleaseRuntime {
   }> {
     const projectKey = params?.projectKey ?? this.config.defaultProjectKey;
     const dryRun = params?.dryRun !== false;
-    this.store.purgeExpiredLocks();
-    this.store.purgeExpiredCallbackNonces();
+    await this.store.purgeExpiredLocksAsync();
+    await this.store.purgeExpiredCallbackNoncesAsync();
     const artifactCutoff = this.retentionCutoffIso(this.config.artifactRetentionDays);
     const auditCutoff = this.retentionCutoffIso(this.config.auditRetentionDays);
-    const protectedReleaseIds = this.protectedReleaseIdsForMaintenance(projectKey);
-    const releases = this.store.listReleases({ projectKey });
+    const protectedReleaseIds = await this.protectedReleaseIdsForMaintenanceAsync(projectKey);
+    const releases = await this.store.listReleasesAsync({ projectKey });
     const candidateReleases = releases.filter((release) => {
       const activityAt = release.publishedAt ?? release.updatedAt;
       return !protectedReleaseIds.has(release.releaseId) && activityAt <= artifactCutoff;
     });
     const candidateReleaseIds = new Set(candidateReleases.map((release) => release.releaseId));
-    const candidateBuilds = this.store
-      .listBuilds({ projectKey })
-      .filter((build) => candidateReleaseIds.has(build.releaseId));
-    const artifactCandidates = candidateBuilds.flatMap((build) =>
-      this.store.listArtifactsForBuild(build.buildId),
+    const candidateBuilds = (await this.store.listBuildsAsync({ projectKey })).filter((build) =>
+      candidateReleaseIds.has(build.releaseId),
     );
+    const artifactGroups = await Promise.all(
+      candidateBuilds.map(async (build) => this.store.listArtifactsForBuildAsync(build.buildId)),
+    );
+    const artifactCandidates = artifactGroups.flat();
     const deletedFiles: string[] = [];
     for (const artifact of artifactCandidates) {
       const filePath = await this.resolveArtifactFilePath(artifact);
@@ -5218,7 +7304,7 @@ export class LobsterReleaseRuntime {
       }
       deletedFiles.push(release.manifestPath);
       if (!dryRun) {
-        this.store.upsertRelease({
+        await this.store.upsertReleaseAsync({
           ...release,
           manifestPath: undefined,
           manifestUrl: undefined,
@@ -5228,17 +7314,19 @@ export class LobsterReleaseRuntime {
     }
     const deletedArtifactRows = dryRun
       ? artifactCandidates.length
-      : this.store.deleteArtifacts(artifactCandidates.map((artifact) => artifact.artifactId));
-    const deletedEvents = dryRun ? 0 : this.store.purgeEvents(auditCutoff);
+      : await this.store.deleteArtifactsAsync(
+          artifactCandidates.map((artifact) => artifact.artifactId),
+        );
+    const deletedEvents = dryRun ? 0 : await this.store.purgeEventsAsync(auditCutoff);
     const deletedNotifications = dryRun
       ? 0
-      : this.store.purgeNotifications({
+      : await this.store.purgeNotificationsAsync({
           before: auditCutoff,
           statuses: ["sent", "failed"],
         });
     const deletedIdempotencyReceipts = dryRun
       ? 0
-      : this.store.purgeIdempotencyReceipts(auditCutoff);
+      : await this.store.purgeIdempotencyReceiptsAsync(auditCutoff);
     const result = {
       projectKey,
       dryRun,

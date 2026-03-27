@@ -1294,17 +1294,60 @@
 
 ### 11.1 元数据存储
 
-第一版建议：
+当前已实现形态：
 
-- SQLite 或 PostgreSQL 二选一
+- 元数据存储使用 `SQLite`
+- 数据文件位于 OpenClaw 状态目录下
+- 这套形态已经覆盖当前真实联调：release、build、artifact、rollback、rollout、notifier outbox
 
-如果是你自己先本地跑通，SQLite 足够。
-如果准备多人协作、并发审批、线上部署，直接 PostgreSQL。
+目标生产形态：
 
-我更推荐：
+- 元数据存储切换为 `PostgreSQL`
+- 推荐部署方式是 `PostgreSQL in Docker`
+- `lobster-release` 继续保持当前插件式入口，但底层 store 需要解耦成双实现
 
-- 本地验证阶段用 SQLite
-- 准备正式接 Jenkins 和多人使用时切 PostgreSQL
+这样分层的原因是：
+
+- 当前单机、单 gateway、单开发者联调下，SQLite 最简单也最稳
+- 一旦进入多人协作、长期运营、真实灰度和自动巡检，PostgreSQL 更适合
+- 当前系统已经有锁、幂等、nonce、outbox、rollout，这些都更适合事务型数据库
+
+我建议现在正式定成：
+
+- 当前实现数据库：`SQLite`
+- 目标生产数据库：`PostgreSQL`
+- 推荐生产部署：`PostgreSQL in Docker`
+
+PostgreSQL in Docker 的推荐形态：
+
+- 一个 OpenClaw gateway 实例
+- 一个 PostgreSQL 容器
+- 一个持久化 volume 保存数据库数据
+- Jenkins 与 gateway 网络互通
+- `lobster-release` 继续负责业务状态机，数据库只负责可靠持久化和事务
+
+这件事对应的工程拆解应该是：
+
+1. 抽象 store 接口，不再把 runtime 直接绑定到 `node:sqlite`
+2. 第一阶段先保留当前同步 runtime，新增一个 `PostgreSQL` cache-backed store：
+   - 启动时从 PostgreSQL 预加载核心表到内存
+   - 写入通过串行后台队列回刷到 PostgreSQL
+3. 第二阶段再把 store/runtime 主路径重构成可以兼容 PostgreSQL 的异步直连调用
+   - 当前已经先完成核心 `create / CI callback / approve` 主路径
+   - 现在也已经覆盖 `rollout / rollback / promote / maintenance`
+4. 把锁、nonce、幂等、outbox 的关键写路径升级成事务化写入
+5. 增加连接配置、迁移和 bootstrap
+6. 提供 `docker compose` 样例和迁移脚本
+7. 已完成两轮 `PostgreSQL in Docker` 真实 drill：
+   - `create / CI callback / approve / query`
+   - `rollout / route / rollback / maintenance`
+
+这里有一个很关键的工程现实：
+
+- 现在 `SQLite` 方案大量依赖同步 store 调用
+- Node 里的 PostgreSQL 驱动是异步模型
+- 所以 PostgreSQL 的第一阶段实现更适合用 cache-backed bridge 先接入
+- 真正的最终形态，仍然应该是 async direct-store + 事务化写入
 
 ### 11.2 文件存储
 
@@ -1312,6 +1355,7 @@
 
 建议存储分层：
 
+- 当前已实现：本地挂载目录 + 本地或 HTTP 下载 URL
 - 开发环境：本地挂载目录
 - 预发布环境：MinIO 或 S3 兼容存储
 - 生产环境：OSS / S3 + CDN
@@ -1338,6 +1382,24 @@
 - Jenkins 需要稳定 HTTP API
 - 审批和消息适合走 OpenClaw
 - 文件和数据库管理更像业务服务，不像单纯工具插件
+
+### 11.4 当前与目标部署决策
+
+为了避免设计文档和实现状态脱节，第一版现在正式收口成两层：
+
+当前已实现：
+
+- `lobster-release` 以 OpenClaw custom extension 运行
+- 元数据数据库为 `SQLite`
+- 产物与 manifest 使用本地目录
+- 下载地址通过本地或 HTTP URL 生成
+
+目标生产演进：
+
+- `lobster-release` 继续保留插件入口，但底层数据库切到 `PostgreSQL`
+- 推荐把 `PostgreSQL` 放进 Docker 容器
+- 产物存储从本地目录演进到对象存储或稳定静态文件服务
+- 这样可以在不推翻当前代码结构的情况下逐步生产化
 
 ## 12. 安全与可靠性建议
 
@@ -1477,17 +1539,31 @@
 
 ## 15. 我建议你现在先定的几个关键决策
 
-在真正开写代码前，建议先拍板下面 7 件事：
+在真正开写代码前，建议先拍板下面 9 件事：
 
 1. `lobster-release` 是纯 API 服务，还是 OpenClaw 插件加 API 混合体
-2. 第一版数据库是 SQLite 还是 PostgreSQL
-3. 第一版产物存储是本地目录还是 MinIO
-4. 第一版版本号是否只支持严格三段 `major.minor.patch`
-5. 渠道是否固定为 `dev / beta / release`
-6. patch 是否必须依赖 baseline manifest 才允许发布
-7. `dev` 是否自动发布，`beta/release` 是否必须审批
-8. 触发 Jenkins 用直接 HTTP 调用，还是先经队列层再投递
-9. Jenkins 回调失败时，重试策略放 Jenkins、服务端，还是双边都做
+2. 当前实现数据库是否继续保留 `SQLite`
+3. 目标生产数据库是否确定为 `PostgreSQL in Docker`
+4. 第一版产物存储是本地目录还是 MinIO
+5. 第一版版本号是否只支持严格三段 `major.minor.patch`
+6. 渠道是否固定为 `dev / beta / release`
+7. patch 是否必须依赖 baseline manifest 才允许发布
+8. `dev` 是否自动发布，`beta/release` 是否必须审批
+9. 触发 Jenkins 用直接 HTTP 调用，还是先经队列层再投递
+10. Jenkins 回调失败时，重试策略放 Jenkins、服务端，还是双边都做
+
+按当前实现状态，这些问题已经基本有结论：
+
+1. 当前是 OpenClaw 插件加 API 混合体
+2. 当前实现数据库是 `SQLite`
+3. 目标生产数据库建议确定为 `PostgreSQL in Docker`
+4. 当前产物存储是本地目录，后续再演进到对象存储
+5. 当前版本号只支持严格三段 `major.minor.patch`
+6. 渠道固定为 `dev / beta / release`
+7. patch 依赖 baseline manifest 和兼容性校验
+8. `dev` 可以自动发布，`beta/release` 由项目策略控制审批
+9. Jenkins 目前是直接 HTTP 调用与回调
+10. Jenkins 与服务端都应保留重试能力，但服务端必须幂等接收
 
 ## 16. 推荐的目录演进
 

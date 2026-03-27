@@ -5,7 +5,7 @@ import { createGatewaySubagentRuntime } from "../../src/plugins/runtime/gateway-
 import { resolveLobsterReleaseConfig } from "./config.js";
 import { createLobsterReleaseHttpHandler } from "./http.js";
 import { LobsterReleaseRuntime } from "./runtime.js";
-import { LobsterReleaseStore } from "./store.js";
+import { createLobsterReleaseStore } from "./store.js";
 import type { BuildTargets, ReleaseChannel, ReleaseEnvironment } from "./types.js";
 
 function jsonToolResult(payload: unknown) {
@@ -200,7 +200,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.listRollouts({
+          await runtime.listRolloutsAsync({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             environment:
@@ -328,7 +328,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.cancelRollout({
+          await runtime.cancelRollout({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             rolloutId: String(params.rolloutId),
@@ -354,7 +354,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.getRolloutStatus({
+          await runtime.getRolloutStatusAsync({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             rolloutId: String(params.rolloutId),
@@ -387,7 +387,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.recordRolloutObservation({
+          await runtime.recordRolloutObservationAsync({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             rolloutId: String(params.rolloutId),
@@ -574,7 +574,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.resolveChannelRoute({
+          await runtime.resolveChannelRouteAsync({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             environment:
@@ -649,7 +649,7 @@ function createTools(
       ),
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
-        return jsonToolResult(runtime.renderNotification(String(params.notificationId)));
+        return jsonToolResult(await runtime.renderNotificationAsync(String(params.notificationId)));
       },
     }),
     withRuntimeReady({
@@ -666,7 +666,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.pullNotifications({
+          await runtime.pullNotificationsAsync({
             limit: typeof params.limit === "number" ? params.limit : 10,
             includeFailed: params.includeFailed === true,
           }),
@@ -687,7 +687,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.markNotificationSent(String(params.notificationId), {
+          await runtime.markNotificationSentAsync(String(params.notificationId), {
             deliveryNote: typeof params.deliveryNote === "string" ? params.deliveryNote : undefined,
           }),
         );
@@ -707,7 +707,10 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.markNotificationFailed(String(params.notificationId), String(params.error)),
+          await runtime.markNotificationFailedAsync(
+            String(params.notificationId),
+            String(params.error),
+          ),
         );
       },
     }),
@@ -726,7 +729,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.requeueNotification(String(params.notificationId), {
+          await runtime.requeueNotificationAsync(String(params.notificationId), {
             reason: typeof params.reason === "string" ? params.reason : undefined,
           }),
         );
@@ -899,7 +902,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.getStoreStatus(
+          await runtime.getStoreStatusAsync(
             typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
           ),
         );
@@ -943,7 +946,7 @@ function createTools(
         const params = rawParams as Record<string, unknown>;
         const buildId = String(params.buildId);
         return jsonToolResult({
-          ...runtime.getBuildStatus(buildId),
+          ...(await runtime.getBuildStatusAsync(buildId)),
           jenkinsStatus:
             params.refreshJenkins === true ? await runtime.pollJenkinsBuildStatus(buildId) : null,
         });
@@ -961,7 +964,7 @@ function createTools(
       ),
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
-        return jsonToolResult(runtime.runReleasePreflight(String(params.releaseId)));
+        return jsonToolResult(await runtime.runReleasePreflightAsync(String(params.releaseId)));
       },
     }),
     withRuntimeReady({
@@ -987,9 +990,9 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         if (typeof params.releaseId === "string") {
-          return jsonToolResult(runtime.getRelease(params.releaseId));
+          return jsonToolResult(await runtime.getReleaseAsync(params.releaseId));
         }
-        const state = runtime.getChannelState(
+        const state = await runtime.getChannelStateAsync(
           typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
           (typeof params.environment === "string"
             ? params.environment
@@ -1011,7 +1014,7 @@ function createTools(
       ),
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
-        return jsonToolResult(runtime.generateReleaseNotes(String(params.releaseId)));
+        return jsonToolResult(await runtime.generateReleaseNotesAsync(String(params.releaseId)));
       },
     }),
     withRuntimeReady({
@@ -1037,7 +1040,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.listStableReleases({
+          await runtime.listStableReleasesAsync({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             environment: (typeof params.environment === "string"
@@ -1075,14 +1078,14 @@ function createTools(
         const params = rawParams as Record<string, unknown>;
         if (typeof params.releaseId === "string") {
           return jsonToolResult(
-            runtime.getReleaseGraph(
+            await runtime.getReleaseGraphAsync(
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
               params.releaseId,
             ),
           );
         }
         return jsonToolResult(
-          runtime.getChannelGraph(
+          await runtime.getChannelGraphAsync(
             typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             (typeof params.environment === "string"
               ? params.environment
@@ -1115,7 +1118,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.getChannelHistory({
+          await runtime.getChannelHistoryAsync({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             environment: (typeof params.environment === "string"
@@ -1146,11 +1149,11 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         if (typeof params.buildId === "string") {
-          return jsonToolResult(runtime.getBuildProvenance(params.buildId));
+          return jsonToolResult(await runtime.getBuildProvenanceAsync(params.buildId));
         }
         if (typeof params.releaseId === "string") {
           return jsonToolResult(
-            runtime.getReleaseProvenance(
+            await runtime.getReleaseProvenanceAsync(
               params.releaseId,
               params.mode === "all" ? "all" : "latest",
             ),
@@ -1184,7 +1187,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.listBaselines({
+          await runtime.listBaselinesAsync({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             environment: (typeof params.environment === "string"
@@ -1226,7 +1229,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.getBaselineLineage({
+          await runtime.getBaselineLineageAsync({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             environment: (typeof params.environment === "string"
@@ -1329,7 +1332,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.getPromotionHistory({
+          await runtime.getPromotionHistoryAsync({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             environment:
@@ -1367,7 +1370,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.getRollbackAudit({
+          await runtime.getRollbackAuditAsync({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             environment:
@@ -1403,7 +1406,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.getRollbackPlan({
+          await runtime.getRollbackPlanAsync({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             environment: (typeof params.environment === "string"
@@ -1483,9 +1486,19 @@ const plugin = {
   register(api: OpenClawPluginApi) {
     const config = resolveLobsterReleaseConfig(api.pluginConfig);
     const stateDir = api.runtime.state.resolveStateDir();
-    const store = new LobsterReleaseStore(
-      path.join(stateDir, "plugins", "lobster-release", "lobster-release.sqlite"),
-    );
+    const store =
+      config.dbDriver === "postgres" && config.postgresConnectionString
+        ? createLobsterReleaseStore({
+            driver: "postgres",
+            connectionString: config.postgresConnectionString,
+            schema: config.postgresSchema,
+          })
+        : createLobsterReleaseStore({
+            driver: "sqlite",
+            sqlitePath:
+              config.sqlitePath ??
+              path.join(stateDir, "plugins", "lobster-release", "lobster-release.sqlite"),
+          });
     const runtime = new LobsterReleaseRuntime(store, config, api.logger, stateDir);
 
     api.registerTool(() => createTools(runtime, config.defaultProjectKey, api.runtime, config), {

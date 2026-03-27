@@ -33,16 +33,17 @@
 
 ## 3. 需求与规则固化
 
-- [ ] 确认第一版是否只支持单项目，还是支持多项目
-- [ ] 确认第一版数据库选型：SQLite 或 PostgreSQL
-- [ ] 确认第一版存储选型：本地目录、MinIO、OSS 或 S3
-- [ ] 确认渠道集合是否固定为 `dev / beta / release`
-- [ ] 确认 `dev` 是否允许自动发布
-- [ ] 确认 `beta` 是否必须人工审批
-- [ ] 确认 `release` 是否必须人工审批
-- [ ] 确认 patch 发布是否必须依赖 baseline manifest
-- [ ] 确认是否允许同一版本 rebuild
-- [ ] 确认是否支持 prerelease 版本，如 `1.2.3-beta.1`
+- [x] 确认第一版支持多项目
+- [x] 确认当前已实现数据库为 `SQLite`
+- [x] 确认目标生产数据库为 `PostgreSQL`
+- [x] 确认当前存储形态为本地目录 + 本地或 HTTP 下载 URL
+- [x] 确认目标生产存储形态为对象存储或稳定静态文件服务
+- [x] 确认渠道集合固定为 `dev / beta / release`
+- [x] 确认 `dev` 支持自动发布
+- [x] 确认 `beta` 和 `release` 的审批由项目策略控制
+- [x] 确认 patch 发布依赖 baseline manifest 与兼容性校验
+- [x] 确认同一 release 支持重触发 build，但不新建同版本第二个 release
+- [x] 确认当前不支持 prerelease 版本，如 `1.2.3-beta.1`
 
 ## 4. 版本号治理
 
@@ -165,6 +166,21 @@
 - [x] 实现 event log 持久化
 - [x] 实现渠道状态持久化
 - [x] 设计定期清理策略
+- [x] 抽象 `SQLite / PostgreSQL` 双后端 store 接口
+- [x] 实现 `PostgreSQL` store 第一阶段（schema bootstrap + cache-backed CRUD + serial write queue）
+- [x] 完成 `PostgreSQL` store 本地 smoke（`project / release / build / channel_state` round-trip）
+- [x] 将核心 `release/create + CI callback + approve` 主路径推进为兼容 PostgreSQL 的异步调用
+- [x] 将剩余 `rollout / rollback / promote / maintenance` 主路径继续推进为兼容 PostgreSQL 的异步调用
+- [x] 将常用查询与通知辅助入口（`store status / route resolve / build status / current / stable / promotions / history / rollback plan / rollback audit / graph / provenance / baselines / notes / preflight / notification helpers`）推进为兼容 PostgreSQL 的异步调用
+- [ ] 将 `PostgreSQL` store 从第一阶段 cache 模式升级为全异步直连实现
+- [x] 实现 `PostgreSQL` migration / bootstrap
+- [x] 实现 `SQLite -> PostgreSQL` 数据迁移脚本
+- [x] 支持通过配置切换数据库驱动
+- [x] 为 `PostgreSQL` 补事务化锁、nonce、幂等和 outbox 写入
+- [x] 提供 `docker compose` 的 PostgreSQL 部署样例
+- [x] 验证 `PostgreSQL in Docker` 下的本地启动与基础 API
+- [x] 验证 `PostgreSQL in Docker` 下的 rollout / rollback / maintenance HTTP API drill
+- [x] 验证 `PostgreSQL in Docker` 下的完整 handler drill（create / publish / promote / rollout / rollback / query）
 
 ## 11. 安全与可靠性
 

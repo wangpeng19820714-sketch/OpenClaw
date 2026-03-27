@@ -42,6 +42,10 @@ export type LobsterReleaseProjectPolicy = {
 export type LobsterReleaseConfig = {
   defaultProjectKey: string;
   projects: Record<string, LobsterReleaseProjectPolicy>;
+  dbDriver: "sqlite" | "postgres";
+  sqlitePath?: string;
+  postgresConnectionString?: string;
+  postgresSchema?: string;
   routePrefix: string;
   ciRoutePrefix: string;
   notifierSessionKey?: string;
@@ -228,6 +232,15 @@ export function resolveLobsterReleaseConfig(raw: unknown): LobsterReleaseConfig 
   return {
     defaultProjectKey,
     projects,
+    dbDriver:
+      input.dbDriver === "postgres" || input.dbDriver === "sqlite"
+        ? input.dbDriver
+        : asNonEmptyString(input.postgresConnectionString)
+          ? "postgres"
+          : "sqlite",
+    sqlitePath: asNonEmptyString(input.sqlitePath),
+    postgresConnectionString: asNonEmptyString(input.postgresConnectionString),
+    postgresSchema: asNonEmptyString(input.postgresSchema),
     routePrefix:
       asNonEmptyString(input.routePrefix)?.replace(/\/+$/, "") ?? "/plugins/lobster-release/api",
     ciRoutePrefix: asNonEmptyString(input.ciRoutePrefix)?.replace(/\/+$/, "") ?? "/api/ci/v1",

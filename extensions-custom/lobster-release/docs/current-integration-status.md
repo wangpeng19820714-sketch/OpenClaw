@@ -107,6 +107,89 @@ This document records the current live integration status of `lobster-release`, 
   - store schema version metadata is initialized at startup
   - maintenance can dry-run or execute artifact, manifest, event, notification, and idempotency cleanup
   - protected releases keep current/previous pointers, frozen releases, and recent stable history intact
+  - Store abstraction is now prepared for dual backends.
+  - runtime now depends on a store interface instead of a SQLite-only constructor
+  - SQLite remains the active implementation
+  - PostgreSQL now has a real first-phase backend:
+    - schema bootstrap is implemented
+    - core tables are loaded into an in-memory cache at startup
+    - writes are serialized through a background queue
+    - the runtime factory can switch between `sqlite` and `postgres`
+    - a local PostgreSQL container smoke test has already verified bootstrap plus `project / release / build / channel_state` round-trip persistence
+    - a dedicated `SQLite -> PostgreSQL` migration utility now exists
+    - a PostgreSQL Docker Compose sample now exists for containerized deployment
+    - the migration utility has passed a local `SQLite -> PostgreSQL` smoke drill with `dry-run`, `--truncate`, and round-trip verification
+    - the core release and CI runtime/http path has started moving to async direct-store:
+      - `createRelease`
+      - `triggerRelease`
+      - `recordBuildPublish`
+      - `recordBuildFinish`
+      - `approveRelease`
+      - `resolveCiBaseline`
+      - `recordCiBuildStart`
+    - the remaining publish-control paths now follow the same async direct-store pattern:
+      - `promoteRelease`
+      - `createRollback`
+      - `approveRollback`
+      - `createRollout`
+      - `advanceRollout`
+      - `evaluateRollout`
+      - `tickRollout`
+      - `tickAllRollouts`
+      - `runMaintenance`
+    - common query and helper endpoints now also prefer async direct-store reads:
+      - `getStoreStatus`
+      - `getBuildStatus`
+      - `getChannelState`
+      - `listStableReleases`
+      - `getPromotionHistory`
+      - `getChannelHistory`
+      - `getRollbackPlan`
+      - `getRollbackAudit`
+      - `getRolloutStatus`
+      - `resolveChannelRoute`
+      - `getReleaseGraph`
+      - `getChannelGraph`
+      - `getBuildProvenance`
+      - `getReleaseProvenance`
+      - `listBaselines`
+      - `getBaselineLineage`
+      - `generateReleaseNotes`
+      - `runReleasePreflight`
+      - `renderNotification`
+      - `pullNotifications`
+      - `markNotificationSent`
+      - `markNotificationFailed`
+      - `requeueNotification`
+      - `recordRolloutObservation`
+    - key async write-side helpers have also started moving off the synchronous bridge:
+      - `recordEventAsync`
+      - `queueNotificationAsync`
+      - `archiveReleaseChangelogAsync`
+      - rollout and rollback lifecycle events now use those async helpers on the PostgreSQL path
+    - a real PostgreSQL-in-Docker runtime/http API drill has completed for:
+      - `POST /projects/:projectKey/releases`
+      - `POST /api/ci/v1/builds/start`
+      - `POST /api/ci/v1/builds/publish`
+      - `POST /api/ci/v1/builds/finish`
+      - `POST /projects/:projectKey/releases/:releaseId/approve`
+      - `GET /projects/:projectKey/channels/:channel/current`
+      - `GET /projects/:projectKey/builds/:buildId/provenance`
+      - `GET /projects/:projectKey/releases/:releaseId`
+      - `POST /projects/:projectKey/channels/:channel/rollouts`
+      - `GET /projects/:projectKey/channels/:channel/route`
+      - `POST /projects/:projectKey/rollouts/:rolloutId/advance`
+      - `POST /projects/:projectKey/channels/:channel/rollback`
+      - `POST /projects/:projectKey/rollbacks/:rollbackId/approve`
+      - `POST /projects/:projectKey/maintenance/run`
+  - PostgreSQL is not production-complete yet:
+    - some read-heavy and auxiliary paths still rely on the first-stage cache bridge
+    - PostgreSQL has not yet been fully refactored into a pure async-only direct-store backend
+  - PostgreSQL core reliability writes now use direct transactional paths where correctness matters most:
+    - channel lock acquisition
+    - callback nonce claim
+    - idempotency receipt reads/writes
+    - notification outbox dedupe insert
 - Project policy scaffolding is now implemented for multi-project operation.
   - per-project defaults can define environments, channels, approval policy, regions, audiences, gray release percentages, scheduled builds, and smoke workflows
   - release creation, CI baseline resolution, and CI callback normalization now resolve project/environment/channel through project policy instead of only using global defaults
@@ -217,6 +300,53 @@ The following live release regressions were completed successfully:
   - local maintenance dry run identified only non-protected releases for artifact cleanup
   - store status now reports schema version, counts, and retention configuration
   - a requested rollback now blocks ordinary `approve-release` on the same channel until rollback is resolved
+- `2026-03-27 PostgreSQL in Docker runtime/http validation`
+  - a temporary PostgreSQL `postgres:16` container was started locally
+  - `lobster-release` booted with `dbDriver=postgres` and an isolated schema
+  - the handler-level API flow completed with all steps returning `200`
+    - create release
+    - CI build start
+    - CI build publish
+    - CI build finish
+    - release approve
+    - current channel lookup
+    - build provenance lookup
+    - release lookup
+  - the validated run persisted the expected `currentReleaseId`, `release.status=published`, and `buildProvenance.jenkinsBuildNumber=90`
+- `2026-03-27 PostgreSQL in Docker transaction validation`
+  - callback nonce + idempotency behavior was revalidated against a real PostgreSQL container
+  - first CI `start` callback returned `200`
+  - replaying the identical body with the same nonce returned cached `200` from idempotency receipt
+  - replaying a different request body with the same nonce returned `409 replayed nonce`
+  - this confirms the PostgreSQL transactional claim path distinguishes safe idempotent replay from true nonce reuse
+- `2026-03-27 PostgreSQL in Docker rollout and rollback API validation`
+  - a second PostgreSQL container drill revalidated the remaining publish-control routes through the HTTP handler
+  - rollout creation returned `200` and route resolution selected the rollout candidate for low buckets while keeping the stable release for non-matching buckets
+  - rollout advance with `publishRelease=true` returned `200` and promoted the candidate release through the PostgreSQL path
+  - rollback create and approve both returned `200` when the target release shared a compatible `resourceProtocolVersion`
+  - maintenance dry-run also returned `200`, confirming artifact and audit cleanup planning works with the PostgreSQL backend
+- `2026-03-27 PostgreSQL in Docker async query validation`
+  - a follow-up PostgreSQL container drill revalidated the newly async query endpoints through the HTTP handler
+  - `store/status`, `rollout/status`, `route`, `release graph`, `channel graph`, `build provenance`, `release provenance`, and maintenance dry-run all returned `200`
+  - the drill confirmed rollout route resolution selected the candidate release, rollout health reporting stayed available, and graph/provenance queries returned the expected PostgreSQL-backed records
+- `2026-03-27 PostgreSQL in Docker expanded async query validation`
+  - a final PostgreSQL container drill revalidated the newly async release and rollback query paths after the direct-store sweep
+  - `GET /projects/:projectKey/releases/:releaseId`, `GET /projects/:projectKey/builds/:buildId`, `GET /projects/:projectKey/channels/:channel/current`, `GET /projects/:projectKey/channels/:channel/stable`, `GET /projects/:projectKey/channels/:channel/promotions`, `GET /projects/:projectKey/channels/:channel/history`, `GET /projects/:projectKey/channels/:channel/rollback-plan`, `GET /projects/:projectKey/rollbacks/:rollbackId`, and `GET /projects/:projectKey/rollbacks` all returned `200`
+  - this confirmed the PostgreSQL-backed handler path now covers the remaining high-traffic read APIs beyond graph, provenance, rollout, and maintenance routes
+- `2026-03-27 PostgreSQL in Docker full handler validation`
+  - a fresh-schema PostgreSQL container drill revalidated the end-to-end async write path with stricter assertions
+  - the handler flow completed successfully for:
+    - staging release create
+    - CI start / publish / finish
+    - release approve
+    - promote into `production/release`
+    - rollout create / observe / evaluate
+    - rollback create / approve
+    - current channel lookup
+    - route resolution
+    - rollout status
+    - rollback audit
+  - after rollback, `currentReleaseId` returned to the promoted stable target, route resolution fell back to the channel pointer, and the active rollout was canceled automatically
 - `2026-03-27 project policy and API skeleton local regression`
   - per-project policy isolation validated with distinct environment and channel defaults
   - gray rollout plan queries now return configured percentages, region, audience, scheduled build, and smoke workflow scaffolding

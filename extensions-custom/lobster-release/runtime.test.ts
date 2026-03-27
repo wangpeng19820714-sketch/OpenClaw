@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveLobsterReleaseConfig } from "./config.js";
 import { LobsterReleaseRuntime } from "./runtime.js";
-import { LobsterReleaseStore } from "./store.js";
+import { createLobsterReleaseStore } from "./store.js";
 
 const tempDirs: string[] = [];
 const runtimes: LobsterReleaseRuntime[] = [];
@@ -12,7 +12,7 @@ const runtimes: LobsterReleaseRuntime[] = [];
 async function createRuntime() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lobster-release-"));
   tempDirs.push(dir);
-  const store = new LobsterReleaseStore(path.join(dir, "lobster.sqlite"));
+  const store = createLobsterReleaseStore(path.join(dir, "lobster.sqlite"));
   const runtime = new LobsterReleaseRuntime(
     store,
     resolveLobsterReleaseConfig({
@@ -34,7 +34,7 @@ async function createRuntime() {
 async function createRuntimeWithConfig(overrides: Record<string, unknown>) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lobster-release-"));
   tempDirs.push(dir);
-  const store = new LobsterReleaseStore(path.join(dir, "lobster.sqlite"));
+  const store = createLobsterReleaseStore(path.join(dir, "lobster.sqlite"));
   const runtime = new LobsterReleaseRuntime(
     store,
     resolveLobsterReleaseConfig({
@@ -1766,7 +1766,7 @@ describe("lobster-release runtime", () => {
     expect(pausedRender.messageText).toContain("Action: pause");
     runtime.markNotificationSent(pausedNotifications[0].notificationId);
 
-    runtime.cancelRollout({
+    await runtime.cancelRollout({
       projectKey: "projectb",
       rolloutId: rollout.rolloutId,
       operator: "ops",

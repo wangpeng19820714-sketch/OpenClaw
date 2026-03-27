@@ -376,7 +376,10 @@ export function createLobsterReleaseHttpHandler(params: {
           return true;
         }
         const receiptScope = `ci:${pathname}`;
-        const existingReceipt = runtime.getIdempotencyReceipt(receiptScope, idempotencyKey);
+        const existingReceipt = await runtime.getIdempotencyReceiptAsync(
+          receiptScope,
+          idempotencyKey,
+        );
         if (existingReceipt) {
           if (existingReceipt.requestHash !== requestHash) {
             sendCiError(res, 409, "idempotency key reused with different request body");
@@ -386,14 +389,16 @@ export function createLobsterReleaseHttpHandler(params: {
           return true;
         }
         const nonce = readHeaderString(req.headers["x-lobster-nonce"]);
-        if (!nonce || !runtime.claimCallbackNonce(receiptScope, nonce, requestHash)) {
+        if (!(nonce && (await runtime.claimCallbackNonceAsync(receiptScope, nonce, requestHash)))) {
           sendCiError(res, 409, "replayed nonce");
           return true;
         }
 
         if (pathname === "/builds/resolve-baseline") {
-          const responseBody = ciEnvelope(runtime.resolveCiBaseline(body as CiBuildRequest));
-          runtime.recordIdempotencyReceipt(
+          const responseBody = ciEnvelope(
+            await runtime.resolveCiBaselineAsync(body as CiBuildRequest),
+          );
+          await runtime.recordIdempotencyReceiptAsync(
             receiptScope,
             idempotencyKey,
             requestHash,
@@ -404,14 +409,14 @@ export function createLobsterReleaseHttpHandler(params: {
           return true;
         }
         if (pathname === "/builds/start") {
-          const build = runtime.recordCiBuildStart(body as CiBuildRequest);
+          const build = await runtime.recordCiBuildStartAsync(body as CiBuildRequest);
           const responseBody = ciEnvelope({
             accepted: true,
             traceId: build.buildId,
             buildId: build.buildId,
             releaseId: build.releaseId,
           });
-          runtime.recordIdempotencyReceipt(
+          await runtime.recordIdempotencyReceiptAsync(
             receiptScope,
             idempotencyKey,
             requestHash,
@@ -433,7 +438,7 @@ export function createLobsterReleaseHttpHandler(params: {
               result.manifest.artifacts.find((item) => item.type === "manifest")?.downloadUrl ??
               null,
           });
-          runtime.recordIdempotencyReceipt(
+          await runtime.recordIdempotencyReceiptAsync(
             receiptScope,
             idempotencyKey,
             requestHash,
@@ -452,7 +457,7 @@ export function createLobsterReleaseHttpHandler(params: {
             releaseId: result.release.releaseId,
             releaseStatus: result.release.status,
           });
-          runtime.recordIdempotencyReceipt(
+          await runtime.recordIdempotencyReceiptAsync(
             receiptScope,
             idempotencyKey,
             requestHash,
@@ -501,7 +506,7 @@ export function createLobsterReleaseHttpHandler(params: {
         }
         match = matchPath(/^\/projects\/([^/]+)\/releases\/([^/]+)$/, pathname);
         if (match) {
-          const release = runtime.getRelease(match[2]);
+          const release = await runtime.getReleaseAsync(match[2]);
           if (!release || release.projectKey !== match[1]) {
             sendError(res, 404, "release.not_found", `release not found: ${match[2]}`);
             return true;
@@ -542,7 +547,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok({
-              ...runtime.getBuildStatus(match[2]),
+              ...(await runtime.getBuildStatusAsync(match[2])),
               jenkinsStatus: refreshJenkins ? await runtime.pollJenkinsBuildStatus(match[2]) : null,
             }),
           );
@@ -550,7 +555,7 @@ export function createLobsterReleaseHttpHandler(params: {
         }
         match = matchPath(/^\/projects\/([^/]+)\/store\/status$/, pathname);
         if (match) {
-          sendJson(res, 200, ok(runtime.getStoreStatus(match[1])));
+          sendJson(res, 200, ok(await runtime.getStoreStatusAsync(match[1])));
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/policy$/, pathname);
@@ -567,12 +572,12 @@ export function createLobsterReleaseHttpHandler(params: {
         }
         match = matchPath(/^\/projects\/([^/]+)\/releases\/([^/]+)\/preflight$/, pathname);
         if (match) {
-          sendJson(res, 200, ok(runtime.runReleasePreflight(match[2])));
+          sendJson(res, 200, ok(await runtime.runReleasePreflightAsync(match[2])));
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/releases\/([^/]+)\/notes$/, pathname);
         if (match) {
-          sendJson(res, 200, ok(runtime.generateReleaseNotes(match[2])));
+          sendJson(res, 200, ok(await runtime.generateReleaseNotesAsync(match[2])));
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/current$/, pathname);
@@ -580,7 +585,11 @@ export function createLobsterReleaseHttpHandler(params: {
           const environment =
             (url.searchParams.get("environment") as ReleaseEnvironment | null) ??
             config.defaultEnvironment;
-          const state = runtime.getChannelState(match[1], environment, match[2] as ReleaseChannel);
+          const state = await runtime.getChannelStateAsync(
+            match[1],
+            environment,
+            match[2] as ReleaseChannel,
+          );
           sendJson(res, 200, ok(state));
           return true;
         }
@@ -594,7 +603,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.listStableReleases({
+              await runtime.listStableReleasesAsync({
                 projectKey: match[1],
                 environment,
                 channel: match[2] as ReleaseChannel,
@@ -614,7 +623,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.getPromotionHistory({
+              await runtime.getPromotionHistoryAsync({
                 projectKey: match[1],
                 environment,
                 channel: match[2] as ReleaseChannel,
@@ -634,7 +643,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.getChannelHistory({
+              await runtime.getChannelHistoryAsync({
                 projectKey: match[1],
                 environment,
                 channel: match[2] as ReleaseChannel,
@@ -653,7 +662,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.getRollbackPlan({
+              await runtime.getRollbackPlanAsync({
                 projectKey: match[1],
                 environment,
                 channel: match[2] as ReleaseChannel,
@@ -688,7 +697,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.listRollouts({
+              await runtime.listRolloutsAsync({
                 projectKey: match[1],
                 environment: environment ?? undefined,
                 channel: match[2] as ReleaseChannel,
@@ -700,7 +709,7 @@ export function createLobsterReleaseHttpHandler(params: {
         }
         match = matchPath(/^\/projects\/([^/]+)\/rollouts\/([^/]+)$/, pathname);
         if (match) {
-          sendJson(res, 200, ok(runtime.getRollout(match[2])));
+          sendJson(res, 200, ok(await runtime.getRolloutAsync(match[2])));
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/rollouts\/([^/]+)\/status$/, pathname);
@@ -709,7 +718,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.getRolloutStatus({
+              await runtime.getRolloutStatusAsync({
                 projectKey: match[1],
                 rolloutId: match[2],
                 publishRelease: url.searchParams.get("publishRelease") !== "false",
@@ -726,7 +735,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.resolveChannelRoute({
+              await runtime.resolveChannelRouteAsync({
                 projectKey: match[1],
                 environment: environment ?? undefined,
                 channel: match[2] as ReleaseChannel,
@@ -741,7 +750,7 @@ export function createLobsterReleaseHttpHandler(params: {
         }
         match = matchPath(/^\/projects\/([^/]+)\/releases\/([^/]+)\/graph$/, pathname);
         if (match) {
-          sendJson(res, 200, ok(runtime.getReleaseGraph(match[1], match[2])));
+          sendJson(res, 200, ok(await runtime.getReleaseGraphAsync(match[1], match[2])));
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/graph$/, pathname);
@@ -752,19 +761,21 @@ export function createLobsterReleaseHttpHandler(params: {
           sendJson(
             res,
             200,
-            ok(runtime.getChannelGraph(match[1], environment, match[2] as ReleaseChannel)),
+            ok(
+              await runtime.getChannelGraphAsync(match[1], environment, match[2] as ReleaseChannel),
+            ),
           );
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/builds\/([^/]+)\/provenance$/, pathname);
         if (match) {
-          sendJson(res, 200, ok(runtime.getBuildProvenance(match[2])));
+          sendJson(res, 200, ok(await runtime.getBuildProvenanceAsync(match[2])));
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/releases\/([^/]+)\/provenance$/, pathname);
         if (match) {
           const mode = url.searchParams.get("mode") === "all" ? "all" : "latest";
-          sendJson(res, 200, ok(runtime.getReleaseProvenance(match[2], mode)));
+          sendJson(res, 200, ok(await runtime.getReleaseProvenanceAsync(match[2], mode)));
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/baselines\/resolve$/, pathname);
@@ -784,7 +795,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.resolveBaseline({
+              await runtime.resolveBaselineAsync({
                 projectKey: match[1],
                 environment,
                 channel,
@@ -809,7 +820,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.listBaselines({
+              await runtime.listBaselinesAsync({
                 projectKey: match[1],
                 environment,
                 channel,
@@ -835,7 +846,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.getBaselineLineage({
+              await runtime.getBaselineLineageAsync({
                 projectKey: match[1],
                 environment,
                 channel,
@@ -849,7 +860,7 @@ export function createLobsterReleaseHttpHandler(params: {
         }
         match = matchPath(/^\/projects\/([^/]+)\/rollbacks\/([^/]+)$/, pathname);
         if (match) {
-          sendJson(res, 200, ok(runtime.getRollback(match[2])));
+          sendJson(res, 200, ok(await runtime.getRollbackAsync(match[2])));
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/rollbacks$/, pathname);
@@ -861,7 +872,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.getRollbackAudit({
+              await runtime.getRollbackAuditAsync({
                 projectKey: match[1],
                 environment: environment ?? undefined,
                 channel: channel ?? undefined,
@@ -1087,7 +1098,10 @@ export function createLobsterReleaseHttpHandler(params: {
             body,
             requestHash,
           );
-          const existingReceipt = runtime.getIdempotencyReceipt(receiptScope, idempotencyKey);
+          const existingReceipt = await runtime.getIdempotencyReceiptAsync(
+            receiptScope,
+            idempotencyKey,
+          );
           if (existingReceipt) {
             if (existingReceipt.requestHash !== requestHash) {
               sendError(
@@ -1102,13 +1116,15 @@ export function createLobsterReleaseHttpHandler(params: {
             return true;
           }
           const nonce = readHeaderString(req.headers["x-nonce"]);
-          if (!nonce || !runtime.claimCallbackNonce(receiptScope, nonce, requestHash)) {
+          if (
+            !(nonce && (await runtime.claimCallbackNonceAsync(receiptScope, nonce, requestHash)))
+          ) {
             sendError(res, 409, "auth.replayed_nonce", "replayed nonce");
             return true;
           }
           if (action === "start") {
             const responseBody = ok(
-              runtime.recordBuildStart(match[2], {
+              await runtime.recordBuildStartAsync(match[2], {
                 jenkinsJob: typeof body.jenkinsJob === "string" ? body.jenkinsJob : undefined,
                 jenkinsBuildNumber:
                   typeof body.jenkinsBuildNumber === "number" ? body.jenkinsBuildNumber : undefined,
@@ -1120,7 +1136,7 @@ export function createLobsterReleaseHttpHandler(params: {
                 startedAt: typeof body.startedAt === "string" ? body.startedAt : undefined,
               }),
             );
-            runtime.recordIdempotencyReceipt(
+            await runtime.recordIdempotencyReceiptAsync(
               receiptScope,
               idempotencyKey,
               requestHash,
@@ -1169,7 +1185,7 @@ export function createLobsterReleaseHttpHandler(params: {
                   : [],
               }),
             );
-            runtime.recordIdempotencyReceipt(
+            await runtime.recordIdempotencyReceiptAsync(
               receiptScope,
               idempotencyKey,
               requestHash,
@@ -1195,7 +1211,7 @@ export function createLobsterReleaseHttpHandler(params: {
               error: body.error,
             }),
           );
-          runtime.recordIdempotencyReceipt(
+          await runtime.recordIdempotencyReceiptAsync(
             receiptScope,
             idempotencyKey,
             requestHash,
@@ -1257,7 +1273,7 @@ export function createLobsterReleaseHttpHandler(params: {
         }
         match = matchPath(/^\/projects\/([^/]+)\/rollbacks\/([^/]+)\/cancel$/, pathname);
         if (match) {
-          sendJson(res, 200, ok(runtime.cancelRollback(match[2])));
+          sendJson(res, 200, ok(await runtime.cancelRollback(match[2])));
           return true;
         }
         match = matchPath(/^\/projects\/([^/]+)\/rollouts\/([^/]+)\/advance$/, pathname);
@@ -1298,7 +1314,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.cancelRollout({
+              await runtime.cancelRollout({
                 projectKey: match[1],
                 rolloutId: match[2],
                 operator: typeof body.operator === "string" ? body.operator : "api",
@@ -1321,7 +1337,7 @@ export function createLobsterReleaseHttpHandler(params: {
             res,
             200,
             ok(
-              runtime.recordRolloutObservation({
+              await runtime.recordRolloutObservationAsync({
                 projectKey: match[1],
                 rolloutId: match[2],
                 sampleSize: typeof body.sampleSize === "number" ? body.sampleSize : undefined,

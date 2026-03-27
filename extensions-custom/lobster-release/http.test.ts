@@ -9,7 +9,7 @@ import { createMockServerResponse } from "../../src/test-utils/mock-http-respons
 import { resolveLobsterReleaseConfig } from "./config.js";
 import { createLobsterReleaseHttpHandler } from "./http.js";
 import { LobsterReleaseRuntime } from "./runtime.js";
-import { LobsterReleaseStore } from "./store.js";
+import { createLobsterReleaseStore } from "./store.js";
 
 const tempDirs: string[] = [];
 const runtimes: LobsterReleaseRuntime[] = [];
@@ -26,7 +26,7 @@ async function createHarness(configOverrides: Record<string, unknown> = {}) {
     ...configOverrides,
   });
   const runtime = new LobsterReleaseRuntime(
-    new LobsterReleaseStore(path.join(dir, "lobster.sqlite")),
+    createLobsterReleaseStore(path.join(dir, "lobster.sqlite")),
     config,
     {
       info() {},

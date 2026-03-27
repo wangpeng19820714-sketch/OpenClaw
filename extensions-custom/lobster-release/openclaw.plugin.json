@@ -12,6 +12,25 @@
       "label": "Project Policies",
       "help": "Optional per-project policy map for environment/channel isolation, gray rollout defaults, rollout monitoring and circuit-breaker policy, region or audience dimensions, scheduled builds, and smoke workflows."
     },
+    "dbDriver": {
+      "label": "Database Driver",
+      "help": "Storage backend for lobster-release metadata. Use sqlite for the current local store or postgres for the future production store.",
+      "placeholder": "sqlite"
+    },
+    "sqlitePath": {
+      "label": "SQLite Path",
+      "help": "Optional override for the sqlite database file path."
+    },
+    "postgresConnectionString": {
+      "label": "PostgreSQL Connection String",
+      "help": "Optional PostgreSQL connection string used when dbDriver=postgres.",
+      "sensitive": true
+    },
+    "postgresSchema": {
+      "label": "PostgreSQL Schema",
+      "help": "Optional PostgreSQL schema name used when dbDriver=postgres.",
+      "placeholder": "public"
+    },
     "defaultEnvironment": {
       "label": "Default Environment",
       "help": "Default environment used for release creation and CI callbacks.",
@@ -144,6 +163,10 @@
     "properties": {
       "defaultProjectKey": { "type": "string" },
       "projects": { "type": "object" },
+      "dbDriver": { "type": "string" },
+      "sqlitePath": { "type": "string" },
+      "postgresConnectionString": { "type": "string" },
+      "postgresSchema": { "type": "string" },
       "defaultEnvironment": { "type": "string" },
       "defaultChannel": { "type": "string" },
       "routePrefix": { "type": "string" },
