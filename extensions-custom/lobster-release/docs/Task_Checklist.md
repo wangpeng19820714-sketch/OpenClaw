@@ -222,6 +222,7 @@
 - [x] 实现 rollout 监控能力
 - [x] 实现 rollout 自动扩量能力
 - [x] 实现 rollout 自动熔断能力
+- [x] 实现 rollout 自动巡检入口
 - [x] 将 `gamexpert` gray policy 固化为正式配置
 - [ ] 设计版本与运营数据联动入口
 - [x] 设计定时构建或夜间构建能力
@@ -259,6 +260,7 @@
 - [x] 为 rollout 路由决策编写测试
 - [x] 为 rollout 生命周期编写测试
 - [x] 为 rollout 监控和自动动作编写测试
+- [x] 为 rollout 自动巡检编写测试
 
 ## 17. 联调与验收
 
@@ -280,6 +282,7 @@
 - [x] 验证稳定版本标记与冻结规则正确
 - [x] 验证重复回调幂等处理正确
 - [x] 验证正式 gray policy 下的 live rollout 自动扩量与熔断行为
+- [x] 验证 live rollout 自动巡检入口正确
 
 ## 18. 文档
 

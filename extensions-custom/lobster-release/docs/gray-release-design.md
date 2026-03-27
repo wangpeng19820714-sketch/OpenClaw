@@ -114,6 +114,19 @@
 - `release_rollout_status`
 - `release_rollout_observe`
 - `release_rollout_evaluate`
+- `release_rollout_tick`
+- `release_rollout_tick_all`
+
+当前建议的自动巡检方式：
+
+1. 外部监控系统先汇总一个时间窗的指标
+2. 调 `release_rollout_tick` 直接把样本写入并触发一次评估
+3. 或定时调 `release_rollout_tick_all`，批量扫描该 channel 下所有活动 rollout
+4. 由 runtime 根据 monitoring 配置自动决定：
+   - 扩量
+   - 完成并发布
+   - pause
+   - cancel
 
 ## 9. 正式配置建议
 

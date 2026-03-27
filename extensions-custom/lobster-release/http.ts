@@ -1362,6 +1362,92 @@ export function createLobsterReleaseHttpHandler(params: {
           );
           return true;
         }
+        match = matchPath(/^\/projects\/([^/]+)\/rollouts\/([^/]+)\/tick$/, pathname);
+        if (match) {
+          const body = await readJsonObjectBody(req, res, {
+            maxBytes: 128 * 1024,
+            timeoutMs: 10_000,
+          });
+          if (!body) {
+            return true;
+          }
+          const observation =
+            body.observation && typeof body.observation === "object"
+              ? (body.observation as Record<string, unknown>)
+              : undefined;
+          sendJson(
+            res,
+            200,
+            ok(
+              await runtime.tickRollout({
+                projectKey: match[1],
+                rolloutId: match[2],
+                autoApply: body.autoApply === true,
+                publishRelease: body.publishRelease !== false,
+                operator: typeof body.operator === "string" ? body.operator : "api",
+                observation: observation
+                  ? {
+                      sampleSize:
+                        typeof observation.sampleSize === "number"
+                          ? observation.sampleSize
+                          : undefined,
+                      successCount:
+                        typeof observation.successCount === "number"
+                          ? observation.successCount
+                          : undefined,
+                      errorCount:
+                        typeof observation.errorCount === "number"
+                          ? observation.errorCount
+                          : undefined,
+                      crashCount:
+                        typeof observation.crashCount === "number"
+                          ? observation.crashCount
+                          : undefined,
+                      latencyP95Ms:
+                        typeof observation.latencyP95Ms === "number"
+                          ? observation.latencyP95Ms
+                          : undefined,
+                      source:
+                        typeof observation.source === "string" ? observation.source : undefined,
+                      notes: typeof observation.notes === "string" ? observation.notes : undefined,
+                      observedAt:
+                        typeof observation.observedAt === "string"
+                          ? observation.observedAt
+                          : undefined,
+                    }
+                  : undefined,
+              }),
+            ),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/rollouts\/tick$/, pathname);
+        if (match) {
+          const body = await readJsonObjectBody(req, res, {
+            maxBytes: 128 * 1024,
+            timeoutMs: 10_000,
+          });
+          if (!body) {
+            return true;
+          }
+          sendJson(
+            res,
+            200,
+            ok(
+              await runtime.tickAllRollouts({
+                projectKey: match[1],
+                environment:
+                  (body.environment as ReleaseEnvironment | undefined) ?? config.defaultEnvironment,
+                channel: match[2] as ReleaseChannel,
+                autoApply: body.autoApply === true,
+                publishRelease: body.publishRelease !== false,
+                limit: typeof body.limit === "number" ? body.limit : undefined,
+                operator: typeof body.operator === "string" ? body.operator : "api",
+              }),
+            ),
+          );
+          return true;
+        }
       }
       return false;
     } catch (error) {

@@ -115,6 +115,10 @@ This document records the current live integration status of `lobster-release`, 
   - healthy rollout samples can auto-advance traffic using configured rollout percentages
   - unhealthy rollout samples can pause or cancel the rollout through circuit-breaker policy
   - paused rollouts remain visible for audit but are excluded from channel routing
+- Rollout automatic inspection entrypoints are now implemented.
+  - operators can tick a single rollout with an inline observation sample
+  - operators can batch-tick all active rollouts for a project/environment/channel
+  - batch tick reuses the same health evaluation and auto-action rules as manual rollout evaluation
 - API integration skeleton is now implemented and validated locally.
   - HTTP tests cover project catalog, gray plan, release creation, release graph, callback nonce replay rejection, store status, and maintenance endpoints
 - Local operator workflow now has a dedicated dev start entrypoint.
@@ -230,6 +234,12 @@ The following live release regressions were completed successfully:
   - bucket `20` routed to rollout release `1.2.17`
   - bucket `30` stayed on stable release `1.2.18`
   - the rollout was canceled immediately after verification
+- `2026-03-27 live gamexpert rollout tick drill`
+  - rollout `rlt_mn89z3y4_dc3feef3` was created with scoped audience `drill`, so ordinary live traffic was unaffected
+  - `tickRollout` with an inline healthy observation advanced traffic from `10` to `25`
+  - `tickAllRollouts` then batch-processed the same active rollout and advanced it again from `25` to `50`
+  - route resolution with `audience=drill` confirmed the rollout release `1.2.17` was selected after both tick operations
+  - the rollout was canceled after the drill, leaving no active drill rollout behind
 
 ## Current Verified State
 

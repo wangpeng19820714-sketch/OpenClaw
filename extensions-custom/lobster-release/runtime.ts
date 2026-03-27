@@ -35,6 +35,8 @@ import type {
   CancelRolloutInput,
   RecordRolloutObservationInput,
   EvaluateRolloutInput,
+  TickRolloutInput,
+  TickAllRolloutsInput,
   TriggerReleaseInput,
 } from "./types.js";
 import { compareVersions, inferBumpType, parseVersion, toCommitShort } from "./versioning.js";
@@ -4676,6 +4678,94 @@ export class LobsterReleaseRuntime {
       release: this.store.getRelease(latestRollout.releaseId),
       status: latestStatus,
       appliedAction,
+    };
+  }
+
+  async tickRollout(input: TickRolloutInput): Promise<{
+    rollout: RolloutRecord;
+    release: ReleaseRecord | null;
+    status: RolloutHealthStatus;
+    appliedAction?: RolloutHealthStatus["autoAction"];
+    observation?: RolloutObservationRecord;
+  }> {
+    let observation: RolloutObservationRecord | undefined;
+    if (input.observation) {
+      const recorded = this.recordRolloutObservation({
+        projectKey: input.projectKey,
+        rolloutId: input.rolloutId,
+        operator: input.operator,
+        sampleSize: input.observation.sampleSize,
+        successCount: input.observation.successCount,
+        errorCount: input.observation.errorCount,
+        crashCount: input.observation.crashCount,
+        latencyP95Ms: input.observation.latencyP95Ms,
+        source: input.observation.source,
+        notes: input.observation.notes,
+        observedAt: input.observation.observedAt,
+      });
+      observation = recorded.observation;
+    }
+    const evaluated = await this.evaluateRollout({
+      projectKey: input.projectKey,
+      rolloutId: input.rolloutId,
+      autoApply: input.autoApply,
+      publishRelease: input.publishRelease,
+      operator: input.operator,
+    });
+    return {
+      ...evaluated,
+      observation,
+    };
+  }
+
+  async tickAllRollouts(input: TickAllRolloutsInput): Promise<{
+    projectKey: string;
+    environment?: ReleaseEnvironment;
+    channel?: ReleaseChannel;
+    processed: number;
+    results: Array<{
+      rolloutId: string;
+      status: RolloutRecord["status"];
+      health: RolloutHealthStatus["health"];
+      appliedAction?: RolloutHealthStatus["autoAction"];
+    }>;
+  }> {
+    const rollouts = this.store
+      .listRollouts({
+        projectKey: input.projectKey,
+        environment: input.environment,
+        channel: input.channel,
+        statuses: ["active"],
+        limit: input.limit,
+      })
+      .filter((rollout) => rollout.status === "active");
+    const results: Array<{
+      rolloutId: string;
+      status: RolloutRecord["status"];
+      health: RolloutHealthStatus["health"];
+      appliedAction?: RolloutHealthStatus["autoAction"];
+    }> = [];
+    for (const rollout of rollouts) {
+      const evaluated = await this.evaluateRollout({
+        projectKey: input.projectKey,
+        rolloutId: rollout.rolloutId,
+        autoApply: input.autoApply,
+        publishRelease: input.publishRelease,
+        operator: input.operator,
+      });
+      results.push({
+        rolloutId: evaluated.rollout.rolloutId,
+        status: evaluated.rollout.status,
+        health: evaluated.status.health,
+        appliedAction: evaluated.appliedAction,
+      });
+    }
+    return {
+      projectKey: input.projectKey,
+      environment: input.environment,
+      channel: input.channel,
+      processed: results.length,
+      results,
     };
   }
 

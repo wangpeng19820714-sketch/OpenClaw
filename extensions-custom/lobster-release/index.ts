@@ -434,6 +434,120 @@ function createTools(
       },
     }),
     withRuntimeReady({
+      name: "release_rollout_tick",
+      label: "Release Rollout Tick",
+      description:
+        "Optionally record one observation sample and then evaluate the rollout for auto-advance or circuit-breaker action.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          rolloutId: Type.String({ minLength: 1 }),
+          autoApply: Type.Optional(Type.Boolean()),
+          publishRelease: Type.Optional(Type.Boolean()),
+          operator: Type.Optional(Type.String()),
+          observation: Type.Optional(
+            Type.Object(
+              {
+                sampleSize: Type.Optional(Type.Number({ minimum: 1 })),
+                successCount: Type.Optional(Type.Number({ minimum: 0 })),
+                errorCount: Type.Optional(Type.Number({ minimum: 0 })),
+                crashCount: Type.Optional(Type.Number({ minimum: 0 })),
+                latencyP95Ms: Type.Optional(Type.Number({ minimum: 0 })),
+                source: Type.Optional(Type.String({ minLength: 1 })),
+                notes: Type.Optional(Type.String()),
+                observedAt: Type.Optional(Type.String({ minLength: 1 })),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        const observation =
+          params.observation && typeof params.observation === "object"
+            ? (params.observation as Record<string, unknown>)
+            : undefined;
+        return jsonToolResult(
+          await runtime.tickRollout({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            rolloutId: String(params.rolloutId),
+            autoApply: params.autoApply === true,
+            publishRelease: params.publishRelease !== false,
+            operator: typeof params.operator === "string" ? params.operator : "agent",
+            observation: observation
+              ? {
+                  sampleSize:
+                    typeof observation.sampleSize === "number" ? observation.sampleSize : undefined,
+                  successCount:
+                    typeof observation.successCount === "number"
+                      ? observation.successCount
+                      : undefined,
+                  errorCount:
+                    typeof observation.errorCount === "number" ? observation.errorCount : undefined,
+                  crashCount:
+                    typeof observation.crashCount === "number" ? observation.crashCount : undefined,
+                  latencyP95Ms:
+                    typeof observation.latencyP95Ms === "number"
+                      ? observation.latencyP95Ms
+                      : undefined,
+                  source: typeof observation.source === "string" ? observation.source : undefined,
+                  notes: typeof observation.notes === "string" ? observation.notes : undefined,
+                  observedAt:
+                    typeof observation.observedAt === "string" ? observation.observedAt : undefined,
+                }
+              : undefined,
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_rollout_tick_all",
+      label: "Release Rollout Tick All",
+      description:
+        "Evaluate all active rollouts for a project/environment/channel and auto-apply the configured actions.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          autoApply: Type.Optional(Type.Boolean()),
+          publishRelease: Type.Optional(Type.Boolean()),
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+          operator: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          await runtime.tickAllRollouts({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment:
+              typeof params.environment === "string"
+                ? (params.environment as ReleaseEnvironment)
+                : undefined,
+            channel:
+              typeof params.channel === "string" ? (params.channel as ReleaseChannel) : undefined,
+            autoApply: params.autoApply === true,
+            publishRelease: params.publishRelease !== false,
+            limit: typeof params.limit === "number" ? params.limit : undefined,
+            operator: typeof params.operator === "string" ? params.operator : "agent",
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
       name: "release_route_resolve",
       label: "Release Route Resolve",
       description:
@@ -1385,6 +1499,8 @@ const plugin = {
         "release_rollout_status",
         "release_rollout_observe",
         "release_rollout_evaluate",
+        "release_rollout_tick",
+        "release_rollout_tick_all",
         "release_route_resolve",
         "release_notifications_drain",
         "release_notifications_render",

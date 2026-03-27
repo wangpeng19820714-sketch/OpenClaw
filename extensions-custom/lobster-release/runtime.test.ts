@@ -971,6 +971,7 @@ describe("lobster-release runtime", () => {
           defaultChannel: "release",
           environments: ["production"],
           channels: ["release"],
+          regions: ["cn", "us"],
           grayRelease: {
             enabled: true,
             rolloutPercentages: [10, 50, 100],
@@ -1293,6 +1294,206 @@ describe("lobster-release runtime", () => {
     });
     expect(pausedRoute.route).toBe("channel");
     expect(pausedRoute.selectedRelease?.releaseId).toBe(candidate.release.releaseId);
+  });
+
+  it("ticks rollout observations directly and batch-evaluates active rollouts", async () => {
+    const runtime = await createRuntimeWithConfig({
+      defaultProjectKey: "projectb",
+      projects: {
+        projectb: {
+          defaultEnvironment: "production",
+          defaultChannel: "release",
+          environments: ["production"],
+          channels: ["release"],
+          grayRelease: {
+            enabled: true,
+            rolloutPercentages: [10, 50, 100],
+            stickiness: "account",
+            monitoring: {
+              enabled: true,
+              minSampleSize: 100,
+              minSuccessRate: 0.9,
+              maxErrorRate: 0.08,
+              maxCrashRate: 0.02,
+              autoAdvance: true,
+              autoAdvanceAfterMinutes: 0,
+              publishOnComplete: true,
+              circuitBreakerAction: "pause",
+            },
+          },
+        },
+      },
+    });
+
+    const stable = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "2.0.0",
+      targets: {
+        androidApk: false,
+        androidAab: true,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: true,
+      createdBy: "tester",
+    });
+    runtime.recordBuildStart(stable.build!.buildId, {
+      jenkinsBuildNumber: 60,
+      jenkinsJob: "GameXpert_Godot_CI",
+    });
+    await runtime.recordBuildPublish(stable.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-2.0.0-60.aab",
+          fileSizeBytes: 100,
+          sha256: "stable-batch",
+          storageProvider: "s3",
+          storagePath: "releases/2.0.0-60/ProjectB-android-aab-2.0.0-60.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(stable.build!.buildId, { status: "success" });
+    await runtime.approveRelease(stable.release.releaseId, "approver");
+
+    const healthyCandidate = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "2.0.1",
+      targets: {
+        androidApk: false,
+        androidAab: true,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: true,
+      createdBy: "tester",
+    });
+    runtime.recordBuildStart(healthyCandidate.build!.buildId, {
+      jenkinsBuildNumber: 61,
+      jenkinsJob: "GameXpert_Godot_CI",
+    });
+    await runtime.recordBuildPublish(healthyCandidate.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-2.0.1-61.aab",
+          fileSizeBytes: 100,
+          sha256: "healthy-batch",
+          storageProvider: "s3",
+          storagePath: "releases/2.0.1-61/ProjectB-android-aab-2.0.1-61.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(healthyCandidate.build!.buildId, { status: "success" });
+    const healthyRollout = await runtime.createRollout({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      releaseId: healthyCandidate.release.releaseId,
+      trafficPercent: 10,
+      scope: { region: "cn" },
+      operator: "ops",
+    });
+
+    const unhealthyCandidate = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "2.0.2",
+      targets: {
+        androidApk: false,
+        androidAab: true,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: true,
+      createdBy: "tester",
+    });
+    runtime.recordBuildStart(unhealthyCandidate.build!.buildId, {
+      jenkinsBuildNumber: 62,
+      jenkinsJob: "GameXpert_Godot_CI",
+    });
+    await runtime.recordBuildPublish(unhealthyCandidate.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-2.0.2-62.aab",
+          fileSizeBytes: 100,
+          sha256: "unhealthy-batch",
+          storageProvider: "s3",
+          storagePath: "releases/2.0.2-62/ProjectB-android-aab-2.0.2-62.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(unhealthyCandidate.build!.buildId, { status: "success" });
+    const unhealthyRollout = await runtime.createRollout({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      releaseId: unhealthyCandidate.release.releaseId,
+      trafficPercent: 10,
+      scope: { region: "us" },
+      operator: "ops",
+    });
+
+    const ticked = await runtime.tickRollout({
+      projectKey: "projectb",
+      rolloutId: healthyRollout.rolloutId,
+      autoApply: true,
+      operator: "ops",
+      observation: {
+        sampleSize: 120,
+        successCount: 115,
+        errorCount: 5,
+        crashCount: 0,
+        source: "tick-monitor",
+      },
+    });
+    expect(ticked.observation?.sampleSize).toBe(120);
+    expect(ticked.appliedAction?.type).toBe("advance");
+    expect(ticked.rollout.trafficPercent).toBe(50);
+
+    runtime.recordRolloutObservation({
+      projectKey: "projectb",
+      rolloutId: unhealthyRollout.rolloutId,
+      sampleSize: 150,
+      successCount: 100,
+      errorCount: 30,
+      crashCount: 20,
+      source: "tick-monitor",
+      operator: "ops",
+    });
+    const batchTick = await runtime.tickAllRollouts({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      autoApply: true,
+      operator: "ops",
+    });
+    expect(batchTick.processed).toBe(2);
+    expect(batchTick.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          rolloutId: healthyRollout.rolloutId,
+          status: "completed",
+          health: "healthy",
+          appliedAction: expect.objectContaining({ type: "complete" }),
+        }),
+        expect.objectContaining({
+          rolloutId: unhealthyRollout.rolloutId,
+          status: "paused",
+          health: "unhealthy",
+          appliedAction: expect.objectContaining({ type: "pause" }),
+        }),
+      ]),
+    );
   });
 
   it("blocks approve-release while a rollback is still requested", async () => {

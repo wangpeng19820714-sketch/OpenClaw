@@ -388,6 +388,138 @@ describe("lobster-release http handler", () => {
     expect(cancelRes.statusCode).toBe(200);
   });
 
+  it("ticks rollout monitoring through the API", async () => {
+    const { handler, runtime } = await createHarness({
+      defaultProjectKey: "projectb",
+      projects: {
+        projectb: {
+          defaultEnvironment: "production",
+          defaultChannel: "release",
+          environments: ["production"],
+          channels: ["release"],
+          grayRelease: {
+            enabled: true,
+            rolloutPercentages: [10, 50, 100],
+            stickiness: "account",
+            monitoring: {
+              enabled: true,
+              minSampleSize: 100,
+              minSuccessRate: 0.9,
+              maxErrorRate: 0.08,
+              maxCrashRate: 0.02,
+              autoAdvance: true,
+              autoAdvanceAfterMinutes: 0,
+              publishOnComplete: true,
+              circuitBreakerAction: "pause",
+            },
+          },
+        },
+      },
+    });
+
+    const stable = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "2.1.0",
+      targets: { androidApk: false, androidAab: true, macosApp: false, patch: false },
+      triggerBuild: true,
+      createdBy: "test",
+    });
+    runtime.recordBuildStart(stable.build!.buildId, {
+      jenkinsBuildNumber: 70,
+      jenkinsJob: "GameXpert_Godot_CI",
+    });
+    await runtime.recordBuildPublish(stable.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-2.1.0-70.aab",
+          fileSizeBytes: 100,
+          sha256: "stable-api-tick",
+          storageProvider: "s3",
+          storagePath: "releases/2.1.0-70/ProjectB-android-aab-2.1.0-70.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(stable.build!.buildId, { status: "success" });
+    await runtime.approveRelease(stable.release.releaseId, "approver");
+
+    const candidate = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "2.1.1",
+      targets: { androidApk: false, androidAab: true, macosApp: false, patch: false },
+      triggerBuild: true,
+      createdBy: "test",
+    });
+    runtime.recordBuildStart(candidate.build!.buildId, {
+      jenkinsBuildNumber: 71,
+      jenkinsJob: "GameXpert_Godot_CI",
+    });
+    await runtime.recordBuildPublish(candidate.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-2.1.1-71.aab",
+          fileSizeBytes: 100,
+          sha256: "candidate-api-tick",
+          storageProvider: "s3",
+          storagePath: "releases/2.1.1-71/ProjectB-android-aab-2.1.1-71.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(candidate.build!.buildId, { status: "success" });
+    const rollout = await runtime.createRollout({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      releaseId: candidate.release.releaseId,
+      trafficPercent: 10,
+      operator: "ops",
+    });
+
+    const tickRes = createMockServerResponse();
+    await handler(
+      createRequest({
+        method: "POST",
+        url: `/plugins/lobster-release/api/projects/projectb/rollouts/${rollout.rolloutId}/tick`,
+        body: JSON.stringify({
+          autoApply: true,
+          observation: {
+            sampleSize: 120,
+            successCount: 116,
+            errorCount: 4,
+            source: "api-tick-monitor",
+          },
+        }),
+        headers: { "content-type": "application/json" },
+      }),
+      tickRes,
+    );
+    expect(tickRes.statusCode).toBe(200);
+    expect(String(tickRes.body)).toContain('"type": "advance"');
+
+    const batchTickRes = createMockServerResponse();
+    await handler(
+      createRequest({
+        method: "POST",
+        url: "/plugins/lobster-release/api/projects/projectb/channels/release/rollouts/tick",
+        body: JSON.stringify({
+          environment: "production",
+          autoApply: true,
+        }),
+        headers: { "content-type": "application/json" },
+      }),
+      batchTickRes,
+    );
+    expect(batchTickRes.statusCode).toBe(200);
+    expect(String(batchTickRes.body)).toContain('"processed": 1');
+  });
+
   it("rejects replayed signed callback nonces and supports maintenance endpoints", async () => {
     const { handler, runtime, config } = await createHarness();
     const created = await runtime.createRelease({

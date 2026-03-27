@@ -507,6 +507,20 @@ export type EvaluateRolloutInput = {
   operator?: string;
 };
 
+export type TickRolloutInput = EvaluateRolloutInput & {
+  observation?: Omit<RecordRolloutObservationInput, "projectKey" | "rolloutId" | "operator">;
+};
+
+export type TickAllRolloutsInput = {
+  projectKey: string;
+  environment?: ReleaseEnvironment;
+  channel?: ReleaseChannel;
+  autoApply?: boolean;
+  publishRelease?: boolean;
+  limit?: number;
+  operator?: string;
+};
+
 export type RollbackInput = {
   projectKey: string;
   environment: ReleaseEnvironment;

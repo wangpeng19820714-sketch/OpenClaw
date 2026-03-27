@@ -371,7 +371,53 @@ Notes:
 - can auto-complete and publish the release on the final step
 - can pause or cancel an unhealthy rollout through circuit-breaker policy
 
-### 4A.8 Resolve Channel Route
+### 4A.8 Tick Rollout
+
+`POST /api/projects/:projectKey/rollouts/:rolloutId/tick`
+
+Request:
+
+```json
+{
+  "autoApply": true,
+  "publishRelease": true,
+  "observation": {
+    "sampleSize": 200,
+    "successCount": 194,
+    "errorCount": 6,
+    "crashCount": 0,
+    "source": "ops-monitor"
+  }
+}
+```
+
+Notes:
+
+- combines `observe + evaluate` in one call
+- useful for cron jobs that already have a fresh sample window ready
+
+### 4A.9 Tick All Rollouts
+
+`POST /api/projects/:projectKey/channels/:channel/rollouts/tick`
+
+Request:
+
+```json
+{
+  "environment": "production",
+  "autoApply": true,
+  "publishRelease": true,
+  "limit": 20
+}
+```
+
+Notes:
+
+- scans all active rollouts in the requested channel
+- evaluates each rollout with the current observation set
+- does not inject new observations; use `observe` or `tick` for per-rollout samples
+
+### 4A.10 Resolve Channel Route
 
 `GET /api/projects/:projectKey/channels/:channel/route?environment=production&region=cn&audience=internal&bucket=7`
 

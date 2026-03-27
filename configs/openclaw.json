@@ -86,6 +86,8 @@
             "release_rollout_status",
             "release_rollout_observe",
             "release_rollout_evaluate",
+            "release_rollout_tick",
+            "release_rollout_tick_all",
             "release_route_resolve",
             "release_store_status",
             "release_maintenance_run"
@@ -238,6 +240,8 @@
       "release_rollout_status",
       "release_rollout_observe",
       "release_rollout_evaluate",
+      "release_rollout_tick",
+      "release_rollout_tick_all",
       "release_route_resolve",
       "release_store_status",
       "release_maintenance_run"
