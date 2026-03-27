@@ -1513,7 +1513,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   private client: PostgresClient | undefined;
   private loaded = false;
   private fatalWriteError: Error | undefined;
-  private writeQueue: Promise<void> = Promise.resolve();
   private readonly schemaMeta = new Map<string, SchemaMetaRecord>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly releases = new Map<string, ReleaseRecord>();
@@ -1547,7 +1546,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     const client = createPostgresClient(this.connectionString) as unknown as PostgresClient;
     this.client = client;
     await this.bootstrapSchema();
-    await this.hydrateCaches();
     const schemaMeta: SchemaMetaRecord = {
       metaKey: "store_schema_version",
       schemaVersion: STORE_SCHEMA_VERSION,
@@ -1568,10 +1566,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     this.client = undefined;
     this.loaded = false;
     if (client) {
-      void this.writeQueue
-        .catch(() => undefined)
-        .then(() => client.end({ timeout: 1 }))
-        .catch(() => undefined);
+      void client.end({ timeout: 1 }).catch(() => undefined);
     }
   }
 
@@ -1599,23 +1594,12 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     );
   }
 
-  upsertProject(record: ProjectRecord): void {
-    this.assertHealthy();
-    this.projects.set(record.projectKey, record);
-    this.enqueueWrite(
-      `upsertProject:${record.projectKey}`,
-      `INSERT INTO ${this.table("projects")} (project_key, updated_at, record_json)
-       VALUES ($1, $2, $3::jsonb)
-       ON CONFLICT (project_key) DO UPDATE SET
-         updated_at = EXCLUDED.updated_at,
-         record_json = EXCLUDED.record_json`,
-      [record.projectKey, record.updatedAt, JSON.stringify(record)],
-    );
+  upsertProject(_record: ProjectRecord): void {
+    this.assertSyncMethodUnsupported("upsertProject");
   }
 
-  getProject(projectKey: string): ProjectRecord | null {
-    this.assertHealthy();
-    return this.projects.get(projectKey) ?? null;
+  getProject(_projectKey: string): ProjectRecord | null {
+    return this.assertSyncMethodUnsupported("getProject");
   }
 
   async getProjectAsync(projectKey: string): Promise<ProjectRecord | null> {
@@ -1630,33 +1614,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return record;
   }
 
-  upsertRelease(record: ReleaseRecord): void {
-    this.assertHealthy();
-    this.releases.set(record.releaseId, record);
-    this.enqueueWrite(
-      `upsertRelease:${record.releaseId}`,
-      `INSERT INTO ${this.table("releases")} (
-         release_id, project_key, environment, channel, version, status, stable, frozen, updated_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-       ON CONFLICT (release_id) DO UPDATE SET
-         status = EXCLUDED.status,
-         stable = EXCLUDED.stable,
-         frozen = EXCLUDED.frozen,
-         updated_at = EXCLUDED.updated_at,
-         record_json = EXCLUDED.record_json`,
-      [
-        record.releaseId,
-        record.projectKey,
-        record.environment,
-        record.channel,
-        record.version,
-        record.status,
-        record.stable,
-        record.frozen,
-        record.updatedAt,
-        JSON.stringify(record),
-      ],
-    );
+  upsertRelease(_record: ReleaseRecord): void {
+    this.assertSyncMethodUnsupported("upsertRelease");
   }
 
   async insertEventAsync(record: EventLogRecord): Promise<void> {
@@ -1707,9 +1666,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     );
   }
 
-  getRelease(releaseId: string): ReleaseRecord | null {
-    this.assertHealthy();
-    return this.releases.get(releaseId) ?? null;
+  getRelease(_releaseId: string): ReleaseRecord | null {
+    return this.assertSyncMethodUnsupported("getRelease");
   }
 
   async getReleaseAsync(releaseId: string): Promise<ReleaseRecord | null> {
@@ -1724,7 +1682,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return record;
   }
 
-  listReleases(params: {
+  listReleases(_params: {
     projectKey: string;
     environment?: string;
     channel?: string;
@@ -1732,15 +1690,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     stable?: boolean;
     limit?: number;
   }): ReleaseRecord[] {
-    this.assertHealthy();
-    return [...this.releases.values()]
-      .filter((record) => record.projectKey === params.projectKey)
-      .filter((record) => !params.environment || record.environment === params.environment)
-      .filter((record) => !params.channel || record.channel === params.channel)
-      .filter((record) => !params.status || record.status === params.status)
-      .filter((record) => params.stable === undefined || record.stable === params.stable)
-      .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .slice(0, params.limit && params.limit > 0 ? params.limit : Number.MAX_SAFE_INTEGER);
+    return this.assertSyncMethodUnsupported("listReleases");
   }
 
   async listBuildsAsync(params: {
@@ -1805,29 +1755,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return records;
   }
 
-  upsertBuild(record: BuildRecord): void {
-    this.assertHealthy();
-    this.builds.set(record.buildId, record);
-    this.enqueueWrite(
-      `upsertBuild:${record.buildId}`,
-      `INSERT INTO ${this.table("builds")} (
-         build_id, release_id, project_key, environment, channel, status, updated_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-       ON CONFLICT (build_id) DO UPDATE SET
-         status = EXCLUDED.status,
-         updated_at = EXCLUDED.updated_at,
-         record_json = EXCLUDED.record_json`,
-      [
-        record.buildId,
-        record.releaseId,
-        record.projectKey,
-        record.environment,
-        record.channel,
-        record.status,
-        record.updatedAt,
-        JSON.stringify(record),
-      ],
-    );
+  upsertBuild(_record: BuildRecord): void {
+    this.assertSyncMethodUnsupported("upsertBuild");
   }
 
   async upsertBuildAsync(record: BuildRecord): Promise<void> {
@@ -1854,9 +1783,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     );
   }
 
-  getBuild(buildId: string): BuildRecord | null {
-    this.assertHealthy();
-    return this.builds.get(buildId) ?? null;
+  getBuild(_buildId: string): BuildRecord | null {
+    return this.assertSyncMethodUnsupported("getBuild");
   }
 
   async getBuildAsync(buildId: string): Promise<BuildRecord | null> {
@@ -1867,47 +1795,21 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return record;
   }
 
-  listBuildsForRelease(releaseId: string): BuildRecord[] {
-    this.assertHealthy();
-    return [...this.builds.values()]
-      .filter((record) => record.releaseId === releaseId)
-      .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  listBuildsForRelease(_releaseId: string): BuildRecord[] {
+    return this.assertSyncMethodUnsupported("listBuildsForRelease");
   }
 
-  listBuilds(params: {
+  listBuilds(_params: {
     projectKey: string;
     environment?: string;
     channel?: string;
     limit?: number;
   }): BuildRecord[] {
-    this.assertHealthy();
-    return [...this.builds.values()]
-      .filter((record) => record.projectKey === params.projectKey)
-      .filter((record) => !params.environment || record.environment === params.environment)
-      .filter((record) => !params.channel || record.channel === params.channel)
-      .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .slice(0, params.limit && params.limit > 0 ? params.limit : Number.MAX_SAFE_INTEGER);
+    return this.assertSyncMethodUnsupported("listBuilds");
   }
 
-  insertArtifact(record: ArtifactRecord): void {
-    this.assertHealthy();
-    this.artifacts.set(record.artifactId, record);
-    this.enqueueWrite(
-      `insertArtifact:${record.artifactId}`,
-      `INSERT INTO ${this.table("artifacts")} (
-         artifact_id, build_id, release_id, project_key, artifact_type, created_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-       ON CONFLICT (artifact_id) DO UPDATE SET record_json = EXCLUDED.record_json`,
-      [
-        record.artifactId,
-        record.buildId,
-        record.releaseId,
-        record.projectKey,
-        record.artifactType,
-        record.createdAt,
-        JSON.stringify(record),
-      ],
-    );
+  insertArtifact(_record: ArtifactRecord): void {
+    this.assertSyncMethodUnsupported("insertArtifact");
   }
 
   async insertArtifactAsync(record: ArtifactRecord): Promise<void> {
@@ -1930,11 +1832,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     );
   }
 
-  listArtifactsForBuild(buildId: string): ArtifactRecord[] {
-    this.assertHealthy();
-    return [...this.artifacts.values()]
-      .filter((record) => record.buildId === buildId)
-      .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+  listArtifactsForBuild(_buildId: string): ArtifactRecord[] {
+    return this.assertSyncMethodUnsupported("listArtifactsForBuild");
   }
 
   async listArtifactsForBuildAsync(buildId: string): Promise<ArtifactRecord[]> {
@@ -1950,23 +1849,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return records;
   }
 
-  deleteArtifacts(artifactIds: string[]): number {
-    this.assertHealthy();
-    if (artifactIds.length === 0) {
-      return 0;
-    }
-    let deleted = 0;
-    for (const artifactId of artifactIds) {
-      if (this.artifacts.delete(artifactId)) {
-        deleted += 1;
-      }
-    }
-    this.enqueueWrite(
-      `deleteArtifacts:${artifactIds.length}`,
-      `DELETE FROM ${this.table("artifacts")} WHERE artifact_id = ANY($1::text[])`,
-      [artifactIds],
-    );
-    return deleted;
+  deleteArtifacts(_artifactIds: string[]): number {
+    this.assertSyncMethodUnsupported("deleteArtifacts");
   }
 
   async deleteArtifactsAsync(artifactIds: string[]): Promise<number> {
@@ -1987,27 +1871,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return deleted;
   }
 
-  upsertChannelState(record: ChannelStateRecord): void {
-    this.assertHealthy();
-    const stateKey = this.channelStateKey(record.projectKey, record.environment, record.channel);
-    this.channelStates.set(stateKey, record);
-    this.enqueueWrite(
-      `upsertChannelState:${stateKey}`,
-      `INSERT INTO ${this.table("channel_state")} (
-         state_key, project_key, environment, channel, updated_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-       ON CONFLICT (state_key) DO UPDATE SET
-         updated_at = EXCLUDED.updated_at,
-         record_json = EXCLUDED.record_json`,
-      [
-        stateKey,
-        record.projectKey,
-        record.environment,
-        record.channel,
-        record.updatedAt,
-        JSON.stringify(record),
-      ],
-    );
+  upsertChannelState(_record: ChannelStateRecord): void {
+    this.assertSyncMethodUnsupported("upsertChannelState");
   }
 
   async upsertChannelStateAsync(record: ChannelStateRecord): Promise<void> {
@@ -2033,12 +1898,11 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   getChannelState(
-    projectKey: string,
-    environment: string,
-    channel: string,
+    _projectKey: string,
+    _environment: string,
+    _channel: string,
   ): ChannelStateRecord | null {
-    this.assertHealthy();
-    return this.channelStates.get(this.channelStateKey(projectKey, environment, channel)) ?? null;
+    return this.assertSyncMethodUnsupported("getChannelState");
   }
 
   async getChannelStateAsync(
@@ -2057,25 +1921,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return record;
   }
 
-  insertReleaseRelation(record: ReleaseRelationRecord): void {
-    this.assertHealthy();
-    this.releaseRelations.set(record.relationId, record);
-    this.enqueueWrite(
-      `insertReleaseRelation:${record.relationId}`,
-      `INSERT INTO ${this.table("release_relations")} (
-         relation_id, project_key, from_release_id, to_release_id, relation_type, created_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-       ON CONFLICT (relation_id) DO UPDATE SET record_json = EXCLUDED.record_json`,
-      [
-        record.relationId,
-        record.projectKey,
-        record.fromReleaseId,
-        record.toReleaseId,
-        record.relationType,
-        record.createdAt,
-        JSON.stringify(record),
-      ],
-    );
+  insertReleaseRelation(_record: ReleaseRelationRecord): void {
+    this.assertSyncMethodUnsupported("insertReleaseRelation");
   }
 
   async insertReleaseRelationAsync(record: ReleaseRelationRecord): Promise<void> {
@@ -2098,12 +1945,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     );
   }
 
-  listReleaseRelations(projectKey: string, releaseId: string): ReleaseRelationRecord[] {
-    this.assertHealthy();
-    return [...this.releaseRelations.values()]
-      .filter((record) => record.projectKey === projectKey)
-      .filter((record) => record.fromReleaseId === releaseId || record.toReleaseId === releaseId)
-      .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+  listReleaseRelations(_projectKey: string, _releaseId: string): ReleaseRelationRecord[] {
+    return this.assertSyncMethodUnsupported("listReleaseRelations");
   }
 
   async listReleaseRelationsAsync(
@@ -2123,15 +1966,11 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   listReleaseRelationsByType(
-    projectKey: string,
-    relationType: string,
-    limit?: number,
+    _projectKey: string,
+    _relationType: string,
+    _limit?: number,
   ): ReleaseRelationRecord[] {
-    this.assertHealthy();
-    return [...this.releaseRelations.values()]
-      .filter((record) => record.projectKey === projectKey && record.relationType === relationType)
-      .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(0, limit && limit > 0 ? limit : Number.MAX_SAFE_INTEGER);
+    return this.assertSyncMethodUnsupported("listReleaseRelationsByType");
   }
 
   async listReleaseRelationsByTypeAsync(
@@ -2154,27 +1993,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return records;
   }
 
-  upsertBuildProvenance(record: BuildProvenanceRecord): void {
-    this.assertHealthy();
-    this.buildProvenance.set(record.buildId, record);
-    this.enqueueWrite(
-      `upsertBuildProvenance:${record.buildId}`,
-      `INSERT INTO ${this.table("build_provenance")} (
-         build_id, release_id, project_key, captured_at, provenance_hash, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-       ON CONFLICT (build_id) DO UPDATE SET
-         captured_at = EXCLUDED.captured_at,
-         provenance_hash = EXCLUDED.provenance_hash,
-         record_json = EXCLUDED.record_json`,
-      [
-        record.buildId,
-        record.releaseId,
-        record.projectKey,
-        record.capturedAt,
-        record.provenanceHash,
-        JSON.stringify(record),
-      ],
-    );
+  upsertBuildProvenance(_record: BuildProvenanceRecord): void {
+    this.assertSyncMethodUnsupported("upsertBuildProvenance");
   }
 
   async upsertBuildProvenanceAsync(record: BuildProvenanceRecord): Promise<void> {
@@ -2199,9 +2019,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     );
   }
 
-  getBuildProvenance(buildId: string): BuildProvenanceRecord | null {
-    this.assertHealthy();
-    return this.buildProvenance.get(buildId) ?? null;
+  getBuildProvenance(_buildId: string): BuildProvenanceRecord | null {
+    return this.assertSyncMethodUnsupported("getBuildProvenance");
   }
 
   async getBuildProvenanceAsync(buildId: string): Promise<BuildProvenanceRecord | null> {
@@ -2216,11 +2035,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return record;
   }
 
-  listReleaseProvenance(releaseId: string): BuildProvenanceRecord[] {
-    this.assertHealthy();
-    return [...this.buildProvenance.values()]
-      .filter((record) => record.releaseId === releaseId)
-      .toSorted((left, right) => right.capturedAt.localeCompare(left.capturedAt));
+  listReleaseProvenance(_releaseId: string): BuildProvenanceRecord[] {
+    return this.assertSyncMethodUnsupported("listReleaseProvenance");
   }
 
   async listReleaseProvenanceAsync(releaseId: string): Promise<BuildProvenanceRecord[]> {
@@ -2236,28 +2052,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return records;
   }
 
-  upsertRollback(record: RollbackOperationRecord): void {
-    this.assertHealthy();
-    this.rollbacks.set(record.rollbackId, record);
-    this.enqueueWrite(
-      `upsertRollback:${record.rollbackId}`,
-      `INSERT INTO ${this.table("rollback_operations")} (
-         rollback_id, project_key, environment, channel, status, updated_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-       ON CONFLICT (rollback_id) DO UPDATE SET
-         status = EXCLUDED.status,
-         updated_at = EXCLUDED.updated_at,
-         record_json = EXCLUDED.record_json`,
-      [
-        record.rollbackId,
-        record.projectKey,
-        record.environment,
-        record.channel,
-        record.status,
-        record.completedAt ?? record.createdAt,
-        JSON.stringify(record),
-      ],
-    );
+  upsertRollback(_record: RollbackOperationRecord): void {
+    this.assertSyncMethodUnsupported("upsertRollback");
   }
 
   async upsertRollbackAsync(record: RollbackOperationRecord): Promise<void> {
@@ -2283,9 +2079,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     );
   }
 
-  getRollback(rollbackId: string): RollbackOperationRecord | null {
-    this.assertHealthy();
-    return this.rollbacks.get(rollbackId) ?? null;
+  getRollback(_rollbackId: string): RollbackOperationRecord | null {
+    return this.assertSyncMethodUnsupported("getRollback");
   }
 
   async getRollbackAsync(rollbackId: string): Promise<RollbackOperationRecord | null> {
@@ -2300,23 +2095,13 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return record;
   }
 
-  listRollbacks(params: {
+  listRollbacks(_params: {
     projectKey: string;
     environment?: string;
     channel?: string;
     limit?: number;
   }): RollbackOperationRecord[] {
-    this.assertHealthy();
-    return [...this.rollbacks.values()]
-      .filter((record) => record.projectKey === params.projectKey)
-      .filter((record) => !params.environment || record.environment === params.environment)
-      .filter((record) => !params.channel || record.channel === params.channel)
-      .toSorted((left, right) => {
-        const leftUpdated = left.completedAt ?? left.approvedAt ?? left.createdAt;
-        const rightUpdated = right.completedAt ?? right.approvedAt ?? right.createdAt;
-        return rightUpdated.localeCompare(leftUpdated);
-      })
-      .slice(0, params.limit && params.limit > 0 ? params.limit : Number.MAX_SAFE_INTEGER);
+    return this.assertSyncMethodUnsupported("listRollbacks");
   }
 
   async listRollbacksAsync(params: {
@@ -2347,29 +2132,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return records;
   }
 
-  upsertRollout(record: RolloutRecord): void {
-    this.assertHealthy();
-    this.rollouts.set(record.rolloutId, record);
-    this.enqueueWrite(
-      `upsertRollout:${record.rolloutId}`,
-      `INSERT INTO ${this.table("rollouts")} (
-         rollout_id, project_key, environment, channel, release_id, status, updated_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-       ON CONFLICT (rollout_id) DO UPDATE SET
-         status = EXCLUDED.status,
-         updated_at = EXCLUDED.updated_at,
-         record_json = EXCLUDED.record_json`,
-      [
-        record.rolloutId,
-        record.projectKey,
-        record.environment,
-        record.channel,
-        record.releaseId,
-        record.status,
-        record.updatedAt,
-        JSON.stringify(record),
-      ],
-    );
+  upsertRollout(_record: RolloutRecord): void {
+    this.assertSyncMethodUnsupported("upsertRollout");
   }
 
   async upsertRolloutAsync(record: RolloutRecord): Promise<void> {
@@ -2396,9 +2160,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     );
   }
 
-  getRollout(rolloutId: string): RolloutRecord | null {
-    this.assertHealthy();
-    return this.rollouts.get(rolloutId) ?? null;
+  getRollout(_rolloutId: string): RolloutRecord | null {
+    return this.assertSyncMethodUnsupported("getRollout");
   }
 
   async getRolloutAsync(rolloutId: string): Promise<RolloutRecord | null> {
@@ -2413,7 +2176,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return record;
   }
 
-  listRollouts(params: {
+  listRollouts(_params: {
     projectKey: string;
     environment?: string;
     channel?: string;
@@ -2421,15 +2184,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     statuses?: RolloutRecord["status"][];
     limit?: number;
   }): RolloutRecord[] {
-    this.assertHealthy();
-    return [...this.rollouts.values()]
-      .filter((record) => record.projectKey === params.projectKey)
-      .filter((record) => !params.environment || record.environment === params.environment)
-      .filter((record) => !params.channel || record.channel === params.channel)
-      .filter((record) => !params.releaseId || record.releaseId === params.releaseId)
-      .filter((record) => !params.statuses?.length || params.statuses.includes(record.status))
-      .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .slice(0, params.limit && params.limit > 0 ? params.limit : Number.MAX_SAFE_INTEGER);
+    return this.assertSyncMethodUnsupported("listRollouts");
   }
 
   async listRolloutsAsync(params: {
@@ -2468,28 +2223,11 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return records;
   }
 
-  insertEvent(record: EventLogRecord): void {
-    this.assertHealthy();
-    this.events.set(record.eventId, record);
-    this.enqueueWrite(
-      `insertEvent:${record.eventId}`,
-      `INSERT INTO ${this.table("event_logs")} (
-         event_id, project_key, object_type, object_id, event_type, created_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-       ON CONFLICT (event_id) DO UPDATE SET record_json = EXCLUDED.record_json`,
-      [
-        record.eventId,
-        record.projectKey,
-        record.objectType,
-        record.objectId,
-        record.eventType,
-        record.createdAt,
-        JSON.stringify(record),
-      ],
-    );
+  insertEvent(_record: EventLogRecord): void {
+    this.assertSyncMethodUnsupported("insertEvent");
   }
 
-  listEvents(params: {
+  listEvents(_params: {
     projectKey: string;
     objectType?: string;
     objectId?: string;
@@ -2497,17 +2235,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     eventTypePrefix?: string;
     limit?: number;
   }): EventLogRecord[] {
-    this.assertHealthy();
-    return [...this.events.values()]
-      .filter((record) => record.projectKey === params.projectKey)
-      .filter((record) => !params.objectType || record.objectType === params.objectType)
-      .filter((record) => !params.objectId || record.objectId === params.objectId)
-      .filter((record) => !params.eventType || record.eventType === params.eventType)
-      .filter(
-        (record) => !params.eventTypePrefix || record.eventType.startsWith(params.eventTypePrefix),
-      )
-      .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(0, params.limit && params.limit > 0 ? params.limit : Number.MAX_SAFE_INTEGER);
+    return this.assertSyncMethodUnsupported("listEvents");
   }
 
   async listEventsAsync(params: {
@@ -2545,9 +2273,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return records;
   }
 
-  getIdempotencyReceipt(scope: string, idempotencyKey: string): IdempotencyReceiptRecord | null {
-    this.assertHealthy();
-    return this.idempotencyReceipts.get(`${scope}:${idempotencyKey}`) ?? null;
+  getIdempotencyReceipt(_scope: string, _idempotencyKey: string): IdempotencyReceiptRecord | null {
+    return this.assertSyncMethodUnsupported("getIdempotencyReceipt");
   }
 
   async getIdempotencyReceiptAsync(
@@ -2565,19 +2292,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return record;
   }
 
-  upsertIdempotencyReceipt(record: IdempotencyReceiptRecord): void {
-    this.assertHealthy();
-    this.idempotencyReceipts.set(record.receiptKey, record);
-    this.enqueueWrite(
-      `upsertIdempotencyReceipt:${record.receiptKey}`,
-      `INSERT INTO ${this.table("idempotency_receipts")} (
-         receipt_key, scope, created_at, updated_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5::jsonb)
-       ON CONFLICT (receipt_key) DO UPDATE SET
-         updated_at = EXCLUDED.updated_at,
-         record_json = EXCLUDED.record_json`,
-      [record.receiptKey, record.scope, record.createdAt, record.updatedAt, JSON.stringify(record)],
-    );
+  upsertIdempotencyReceipt(_record: IdempotencyReceiptRecord): void {
+    this.assertSyncMethodUnsupported("upsertIdempotencyReceipt");
   }
 
   async upsertIdempotencyReceiptAsync(record: IdempotencyReceiptRecord): Promise<void> {
@@ -2594,19 +2310,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     );
   }
 
-  purgeExpiredCallbackNonces(now = nowIso()): void {
-    this.assertHealthy();
-    const expiredKeys = [...this.callbackNonces.values()]
-      .filter((record) => record.expiresAt <= now)
-      .map((record) => record.nonceKey);
-    this.removeMany(expiredKeys, this.callbackNonces);
-    if (expiredKeys.length > 0) {
-      this.enqueueWrite(
-        `purgeExpiredCallbackNonces:${expiredKeys.length}`,
-        `DELETE FROM ${this.table("callback_nonces")} WHERE nonce_key = ANY($1::text[])`,
-        [expiredKeys],
-      );
-    }
+  purgeExpiredCallbackNonces(_now = nowIso()): void {
+    this.assertSyncMethodUnsupported("purgeExpiredCallbackNonces");
   }
 
   async purgeExpiredCallbackNoncesAsync(now = nowIso()): Promise<void> {
@@ -2630,37 +2335,12 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     );
   }
 
-  purgeIdempotencyReceipts(before: string): number {
-    this.assertHealthy();
-    const expiredKeys = [...this.idempotencyReceipts.values()]
-      .filter((record) => record.updatedAt <= before)
-      .map((record) => record.receiptKey);
-    this.removeMany(expiredKeys, this.idempotencyReceipts);
-    if (expiredKeys.length > 0) {
-      this.enqueueWrite(
-        `purgeIdempotencyReceipts:${expiredKeys.length}`,
-        `DELETE FROM ${this.table("idempotency_receipts")} WHERE receipt_key = ANY($1::text[])`,
-        [expiredKeys],
-      );
-    }
-    return expiredKeys.length;
+  purgeIdempotencyReceipts(_before: string): number {
+    return this.assertSyncMethodUnsupported("purgeIdempotencyReceipts");
   }
 
-  claimCallbackNonce(record: CallbackNonceRecord): boolean {
-    this.assertHealthy();
-    if (this.callbackNonces.has(record.nonceKey)) {
-      return false;
-    }
-    this.callbackNonces.set(record.nonceKey, record);
-    this.enqueueWrite(
-      `claimCallbackNonce:${record.nonceKey}`,
-      `INSERT INTO ${this.table("callback_nonces")} (
-         nonce_key, scope, expires_at, record_json
-       ) VALUES ($1, $2, $3, $4::jsonb)
-       ON CONFLICT (nonce_key) DO NOTHING`,
-      [record.nonceKey, record.scope, record.expiresAt, JSON.stringify(record)],
-    );
-    return true;
+  claimCallbackNonce(_record: CallbackNonceRecord): boolean {
+    return this.assertSyncMethodUnsupported("claimCallbackNonce");
   }
 
   async claimCallbackNonceAsync(record: CallbackNonceRecord): Promise<boolean> {
@@ -2686,32 +2366,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return true;
   }
 
-  insertNotification(record: NotificationOutboxRecord): void {
-    this.assertHealthy();
-    const existing = this.getNotificationByDedupeKey(record.deliveryChannel, record.dedupeKey);
-    if (existing) {
-      return;
-    }
-    this.notifications.set(record.notificationId, record);
-    this.enqueueWrite(
-      `insertNotification:${record.notificationId}`,
-      `INSERT INTO ${this.table("notification_outbox")} (
-         notification_id, event_id, project_key, delivery_channel, event_type, status, dedupe_key, created_at, updated_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-       ON CONFLICT (delivery_channel, dedupe_key) DO NOTHING`,
-      [
-        record.notificationId,
-        record.eventId,
-        record.projectKey,
-        record.deliveryChannel,
-        record.eventType,
-        record.status,
-        record.dedupeKey,
-        record.createdAt,
-        record.updatedAt,
-        JSON.stringify(record),
-      ],
-    );
+  insertNotification(_record: NotificationOutboxRecord): void {
+    this.assertSyncMethodUnsupported("insertNotification");
   }
 
   async insertNotificationAsync(
@@ -2753,10 +2409,12 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return inserted;
   }
 
-  upsertNotification(record: NotificationOutboxRecord): void {
-    this.assertHealthy();
-    this.notifications.set(record.notificationId, record);
-    this.enqueueWrite(
+  upsertNotification(_record: NotificationOutboxRecord): void {
+    this.assertSyncMethodUnsupported("upsertNotification");
+  }
+
+  async upsertNotificationAsync(record: NotificationOutboxRecord): Promise<void> {
+    await this.executeDirect(
       `upsertNotification:${record.notificationId}`,
       `INSERT INTO ${this.table("notification_outbox")} (
          notification_id, event_id, project_key, delivery_channel, event_type, status, dedupe_key, created_at, updated_at, record_json
@@ -2778,36 +2436,11 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
         JSON.stringify(record),
       ],
     );
-  }
-
-  async upsertNotificationAsync(record: NotificationOutboxRecord): Promise<void> {
-    await this.executeDirect(
-      `INSERT INTO ${this.table("notification_outbox")} (
-         notification_id, event_id, project_key, delivery_channel, event_type, status, dedupe_key, created_at, updated_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-       ON CONFLICT (notification_id) DO UPDATE SET
-         status = EXCLUDED.status,
-         updated_at = EXCLUDED.updated_at,
-         record_json = EXCLUDED.record_json`,
-      [
-        record.notificationId,
-        record.eventId,
-        record.projectKey,
-        record.deliveryChannel,
-        record.eventType,
-        record.status,
-        record.dedupeKey,
-        record.createdAt,
-        record.updatedAt,
-        JSON.stringify(record),
-      ],
-    );
     this.notifications.set(record.notificationId, record);
   }
 
-  getNotification(notificationId: string): NotificationOutboxRecord | null {
-    this.assertHealthy();
-    return this.notifications.get(notificationId) ?? null;
+  getNotification(_notificationId: string): NotificationOutboxRecord | null {
+    return this.assertSyncMethodUnsupported("getNotification");
   }
 
   async getNotificationAsync(notificationId: string): Promise<NotificationOutboxRecord | null> {
@@ -2823,15 +2456,10 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   getNotificationByDedupeKey(
-    deliveryChannel: NotificationOutboxRecord["deliveryChannel"],
-    dedupeKey: string,
+    _deliveryChannel: NotificationOutboxRecord["deliveryChannel"],
+    _dedupeKey: string,
   ): NotificationOutboxRecord | null {
-    this.assertHealthy();
-    return (
-      [...this.notifications.values()].find(
-        (record) => record.deliveryChannel === deliveryChannel && record.dedupeKey === dedupeKey,
-      ) ?? null
-    );
+    return this.assertSyncMethodUnsupported("getNotificationByDedupeKey");
   }
 
   async getNotificationByDedupeKeyAsync(
@@ -2851,19 +2479,12 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return record ?? null;
   }
 
-  listNotifications(params?: {
+  listNotifications(_params?: {
     deliveryChannel?: NotificationOutboxRecord["deliveryChannel"];
     statuses?: NotificationOutboxRecord["status"][];
     limit?: number;
   }): NotificationOutboxRecord[] {
-    this.assertHealthy();
-    return [...this.notifications.values()]
-      .filter(
-        (record) => !params?.deliveryChannel || record.deliveryChannel === params.deliveryChannel,
-      )
-      .filter((record) => !params?.statuses?.length || params.statuses.includes(record.status))
-      .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt))
-      .slice(0, params?.limit && params.limit > 0 ? params.limit : Number.MAX_SAFE_INTEGER);
+    return this.assertSyncMethodUnsupported("listNotifications");
   }
 
   async listNotificationsAsync(params?: {
@@ -2896,33 +2517,30 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return records;
   }
 
-  purgeNotifications(params: {
+  purgeNotifications(_params: {
     before: string;
     statuses?: NotificationOutboxRecord["status"][];
   }): number {
-    this.assertHealthy();
-    const deletedIds = [...this.notifications.values()]
-      .filter((record) => record.updatedAt <= params.before)
-      .filter((record) => !params.statuses?.length || params.statuses.includes(record.status))
-      .map((record) => record.notificationId);
-    this.removeMany(deletedIds, this.notifications);
-    if (deletedIds.length > 0) {
-      this.enqueueWrite(
-        `purgeNotifications:${deletedIds.length}`,
-        `DELETE FROM ${this.table("notification_outbox")} WHERE notification_id = ANY($1::text[])`,
-        [deletedIds],
-      );
-    }
-    return deletedIds.length;
+    return this.assertSyncMethodUnsupported("purgeNotifications");
   }
 
   async purgeNotificationsAsync(params: {
     before: string;
     statuses?: NotificationOutboxRecord["status"][];
   }): Promise<number> {
-    const deletedIds = [...this.notifications.values()]
-      .filter((record) => record.updatedAt <= params.before)
-      .filter((record) => !params.statuses?.length || params.statuses.includes(record.status))
+    const clauses = ["updated_at <= $1"];
+    const values: unknown[] = [params.before];
+    if (params.statuses?.length) {
+      values.push(params.statuses);
+      clauses.push(`status = ANY($${values.length}::text[])`);
+    }
+    const rows = await this.getClient().unsafe(
+      `SELECT record_json FROM ${this.table("notification_outbox")} WHERE ${clauses.join(" AND ")}`,
+      values,
+    );
+    const deletedIds = rows
+      .map((row) => parsePostgresJson<NotificationOutboxRecord>(row.record_json))
+      .filter((record): record is NotificationOutboxRecord => Boolean(record))
       .map((record) => record.notificationId);
     this.removeMany(deletedIds, this.notifications);
     if (deletedIds.length === 0) {
@@ -2936,25 +2554,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return deletedIds.length;
   }
 
-  upsertBaseline(record: BaselineRecord): void {
-    this.assertHealthy();
-    this.baselines.set(record.baselineId, record);
-    this.enqueueWrite(
-      `upsertBaseline:${record.baselineId}`,
-      `INSERT INTO ${this.table("patch_baselines")} (
-         baseline_id, project_key, environment, channel, platform, created_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-       ON CONFLICT (baseline_id) DO UPDATE SET record_json = EXCLUDED.record_json`,
-      [
-        record.baselineId,
-        record.projectKey,
-        record.environment,
-        record.channel,
-        record.platform,
-        record.createdAt,
-        JSON.stringify(record),
-      ],
-    );
+  upsertBaseline(_record: BaselineRecord): void {
+    this.assertSyncMethodUnsupported("upsertBaseline");
   }
 
   async upsertBaselineAsync(record: BaselineRecord): Promise<void> {
@@ -2977,19 +2578,13 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     );
   }
 
-  listBaselines(params: {
+  listBaselines(_params: {
     projectKey: string;
     environment: string;
     channel: string;
     platform: string;
   }): BaselineRecord[] {
-    this.assertHealthy();
-    return [...this.baselines.values()]
-      .filter((record) => record.projectKey === params.projectKey)
-      .filter((record) => record.environment === params.environment)
-      .filter((record) => record.channel === params.channel)
-      .filter((record) => record.platform === params.platform)
-      .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));
+    return this.assertSyncMethodUnsupported("listBaselines");
   }
 
   async listBaselinesAsync(params: {
@@ -3010,25 +2605,18 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return records;
   }
 
-  purgeEvents(before: string): number {
-    this.assertHealthy();
-    const deletedIds = [...this.events.values()]
-      .filter((record) => record.createdAt <= before)
-      .map((record) => record.eventId);
-    this.removeMany(deletedIds, this.events);
-    if (deletedIds.length > 0) {
-      this.enqueueWrite(
-        `purgeEvents:${deletedIds.length}`,
-        `DELETE FROM ${this.table("event_logs")} WHERE event_id = ANY($1::text[])`,
-        [deletedIds],
-      );
-    }
-    return deletedIds.length;
+  purgeEvents(_before: string): number {
+    return this.assertSyncMethodUnsupported("purgeEvents");
   }
 
   async purgeEventsAsync(before: string): Promise<number> {
-    const deletedIds = [...this.events.values()]
-      .filter((record) => record.createdAt <= before)
+    const rows = await this.getClient().unsafe(
+      `SELECT record_json FROM ${this.table("event_logs")} WHERE created_at <= $1`,
+      [before],
+    );
+    const deletedIds = rows
+      .map((row) => parsePostgresJson<EventLogRecord>(row.record_json))
+      .filter((record): record is EventLogRecord => Boolean(record))
       .map((record) => record.eventId);
     this.removeMany(deletedIds, this.events);
     if (deletedIds.length === 0) {
@@ -3043,8 +2631,13 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   async purgeIdempotencyReceiptsAsync(before: string): Promise<number> {
-    const expiredKeys = [...this.idempotencyReceipts.values()]
-      .filter((record) => record.updatedAt <= before)
+    const rows = await this.getClient().unsafe(
+      `SELECT record_json FROM ${this.table("idempotency_receipts")} WHERE updated_at <= $1`,
+      [before],
+    );
+    const expiredKeys = rows
+      .map((row) => parsePostgresJson<IdempotencyReceiptRecord>(row.record_json))
+      .filter((record): record is IdempotencyReceiptRecord => Boolean(record))
       .map((record) => record.receiptKey);
     this.removeMany(expiredKeys, this.idempotencyReceipts);
     if (expiredKeys.length === 0) {
@@ -3059,32 +2652,9 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   acquireLock(
-    record: OperationLockRecord,
+    _record: OperationLockRecord,
   ): { ok: true } | { ok: false; lock: OperationLockRecord } {
-    this.assertHealthy();
-    const current = this.locks.get(record.lockKey);
-    if (current && new Date(current.expiresAt).getTime() > Date.now()) {
-      return { ok: false, lock: current };
-    }
-    this.locks.set(record.lockKey, record);
-    this.enqueueWrite(
-      `acquireLock:${record.lockKey}`,
-      `INSERT INTO ${this.table("operation_locks")} (
-         lock_key, project_key, environment, scope, expires_at, record_json
-       ) VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-       ON CONFLICT (lock_key) DO UPDATE SET
-         expires_at = EXCLUDED.expires_at,
-         record_json = EXCLUDED.record_json`,
-      [
-        record.lockKey,
-        record.projectKey,
-        record.environment,
-        record.lockScope,
-        record.expiresAt,
-        JSON.stringify(record),
-      ],
-    );
-    return { ok: true };
+    return this.assertSyncMethodUnsupported("acquireLock");
   }
 
   async acquireLockAsync(
@@ -3130,14 +2700,8 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return result;
   }
 
-  releaseLock(lockKey: string): void {
-    this.assertHealthy();
-    this.locks.delete(lockKey);
-    this.enqueueWrite(
-      `releaseLock:${lockKey}`,
-      `DELETE FROM ${this.table("operation_locks")} WHERE lock_key = $1`,
-      [lockKey],
-    );
+  releaseLock(_lockKey: string): void {
+    this.assertSyncMethodUnsupported("releaseLock");
   }
 
   async releaseLockAsync(lockKey: string): Promise<void> {
@@ -3150,19 +2714,7 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   purgeExpiredLocks(): void {
-    this.assertHealthy();
-    const now = nowIso();
-    const expiredKeys = [...this.locks.values()]
-      .filter((record) => record.expiresAt <= now)
-      .map((record) => record.lockKey);
-    this.removeMany(expiredKeys, this.locks);
-    if (expiredKeys.length > 0) {
-      this.enqueueWrite(
-        `purgeExpiredLocks:${expiredKeys.length}`,
-        `DELETE FROM ${this.table("operation_locks")} WHERE lock_key = ANY($1::text[])`,
-        [expiredKeys],
-      );
-    }
+    this.assertSyncMethodUnsupported("purgeExpiredLocks");
   }
 
   async purgeExpiredLocksAsync(): Promise<void> {
@@ -3197,8 +2749,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
   }
 
   private async waitForPendingWrites(): Promise<void> {
-    this.assertHealthy();
-    await this.writeQueue;
     this.assertHealthy();
   }
 
@@ -3271,21 +2821,11 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     return `${projectKey}:${environment}:${channel}`;
   }
 
-  private enqueueWrite(description: string, query: string, params: readonly unknown[]): void {
-    const client = this.client;
-    if (!client) {
-      throw new Error(`lobster-release postgres store client unavailable for ${description}`);
-    }
-    this.writeQueue = this.writeQueue
-      .then(async () => {
-        await client.unsafe(query, params);
-      })
-      .catch((error: unknown) => {
-        this.fatalWriteError =
-          error instanceof Error ? error : new Error(`postgres write failed: ${description}`);
-        throw this.fatalWriteError;
-      });
-    void this.writeQueue.catch(() => undefined);
+  private assertSyncMethodUnsupported<T>(method: string): T {
+    this.assertHealthy();
+    throw new Error(
+      `lobster-release postgres store requires async direct-store access for ${method}; use the Async variant instead`,
+    );
   }
 
   private removeMany<T>(keys: string[], cache: Map<string, T>): void {
@@ -3460,87 +3000,6 @@ export class PostgresLobsterReleaseStore implements LobsterReleaseStoreApi {
     for (const statement of statements) {
       await client.unsafe(statement);
     }
-  }
-
-  private async hydrateCaches(): Promise<void> {
-    this.schemaMeta.clear();
-    this.projects.clear();
-    this.releases.clear();
-    this.builds.clear();
-    this.artifacts.clear();
-    this.channelStates.clear();
-    this.releaseRelations.clear();
-    this.buildProvenance.clear();
-    this.rollbacks.clear();
-    this.rollouts.clear();
-    this.events.clear();
-    this.callbackNonces.clear();
-    this.idempotencyReceipts.clear();
-    this.notifications.clear();
-    this.baselines.clear();
-    this.locks.clear();
-    for (const record of await this.loadTable<SchemaMetaRecord>("schema_meta")) {
-      this.schemaMeta.set(record.metaKey, record);
-    }
-    for (const record of await this.loadTable<ProjectRecord>("projects")) {
-      this.projects.set(record.projectKey, record);
-    }
-    for (const record of await this.loadTable<ReleaseRecord>("releases")) {
-      this.releases.set(record.releaseId, record);
-    }
-    for (const record of await this.loadTable<BuildRecord>("builds")) {
-      this.builds.set(record.buildId, record);
-    }
-    for (const record of await this.loadTable<ArtifactRecord>("artifacts")) {
-      this.artifacts.set(record.artifactId, record);
-    }
-    for (const record of await this.loadTable<ChannelStateRecord>("channel_state")) {
-      this.channelStates.set(
-        this.channelStateKey(record.projectKey, record.environment, record.channel),
-        record,
-      );
-    }
-    for (const record of await this.loadTable<ReleaseRelationRecord>("release_relations")) {
-      this.releaseRelations.set(record.relationId, record);
-    }
-    for (const record of await this.loadTable<BuildProvenanceRecord>("build_provenance")) {
-      this.buildProvenance.set(record.buildId, record);
-    }
-    for (const record of await this.loadTable<RollbackOperationRecord>("rollback_operations")) {
-      this.rollbacks.set(record.rollbackId, record);
-    }
-    for (const record of await this.loadTable<RolloutRecord>("rollouts")) {
-      this.rollouts.set(record.rolloutId, record);
-    }
-    for (const record of await this.loadTable<EventLogRecord>("event_logs")) {
-      this.events.set(record.eventId, record);
-    }
-    for (const record of await this.loadTable<CallbackNonceRecord>("callback_nonces")) {
-      this.callbackNonces.set(record.nonceKey, record);
-    }
-    for (const record of await this.loadTable<IdempotencyReceiptRecord>("idempotency_receipts")) {
-      this.idempotencyReceipts.set(record.receiptKey, record);
-    }
-    for (const record of await this.loadTable<NotificationOutboxRecord>("notification_outbox")) {
-      this.notifications.set(record.notificationId, record);
-    }
-    for (const record of await this.loadTable<BaselineRecord>("patch_baselines")) {
-      this.baselines.set(record.baselineId, record);
-    }
-    for (const record of await this.loadTable<OperationLockRecord>("operation_locks")) {
-      this.locks.set(record.lockKey, record);
-    }
-  }
-
-  private async loadTable<T>(tableName: string): Promise<T[]> {
-    const client = this.client;
-    if (!client) {
-      throw new Error("lobster-release postgres store client unavailable");
-    }
-    const rows = await client.unsafe(`SELECT record_json FROM ${this.table(tableName)}`);
-    return rows
-      .map((row) => parsePostgresJson<T>(row.record_json))
-      .filter((record): record is T => Boolean(record));
   }
 }
 

@@ -875,7 +875,7 @@ function createTools(
       async execute(_toolCallId, rawParams) {
         const params = rawParams as Record<string, unknown>;
         return jsonToolResult(
-          runtime.suggestVersion({
+          await runtime.suggestVersionAsync({
             projectKey:
               typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
             environment: (typeof params.environment === "string"

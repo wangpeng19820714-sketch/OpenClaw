@@ -166,6 +166,7 @@ This document records the current live integration status of `lobster-release`, 
       - `recordEventAsync`
       - `queueNotificationAsync`
       - `archiveReleaseChangelogAsync`
+      - `generateManifest`
       - rollout and rollback lifecycle events now use those async helpers on the PostgreSQL path
     - a real PostgreSQL-in-Docker runtime/http API drill has completed for:
       - `POST /projects/:projectKey/releases`
@@ -183,8 +184,9 @@ This document records the current live integration status of `lobster-release`, 
       - `POST /projects/:projectKey/rollbacks/:rollbackId/approve`
       - `POST /projects/:projectKey/maintenance/run`
   - PostgreSQL is not production-complete yet:
-    - some read-heavy and auxiliary paths still rely on the first-stage cache bridge
-    - PostgreSQL has not yet been fully refactored into a pure async-only direct-store backend
+    - the primary release, CI, rollout, rollback, maintenance, manifest, and query paths now run through async direct-store reads and writes
+    - synchronous compatibility helpers still exist for the SQLite path and a small set of legacy in-process callers
+    - `PostgresLobsterReleaseStore` is still a hybrid implementation because those compatibility entry points keep an in-memory mirror alive
   - PostgreSQL core reliability writes now use direct transactional paths where correctness matters most:
     - channel lock acquisition
     - callback nonce claim
@@ -347,6 +349,15 @@ The following live release regressions were completed successfully:
     - rollout status
     - rollback audit
   - after rollback, `currentReleaseId` returned to the promoted stable target, route resolution fell back to the channel pointer, and the active rollout was canceled automatically
+- `2026-03-27 PostgreSQL in Docker manifest direct-store revalidation`
+  - after moving `generateManifest(...)` to async store reads and async release persistence, the full PostgreSQL handler drill still completed successfully on a fresh container
+  - this revalidated published manifest generation, promotion manifest rewrite, rollout evaluation, and rollback manifest rewrite without depending on synchronous release/build/artifact/provenance cache reads
+- `2026-03-27 PostgreSQL in Docker async-only direct-store revalidation`
+  - after removing the PostgreSQL background write queue and forcing the primary async runtime paths to stop calling synchronous `recordEvent(...)` helpers, the full handler drill still completed successfully on a fresh schema
+  - this revalidated `create -> CI start/publish/finish -> approve -> promote -> rollout -> rollback -> query` against PostgreSQL without falling back to synchronous store writes on the main runtime/http path
+- `2026-03-27 PostgreSQL in Docker history and notification drill`
+  - a follow-up PostgreSQL handler drill revalidated `GET /channels/:channel/promotions`, `GET /channels/:channel/history`, and `GET /releases/:releaseId/notes` after tightening the async direct-store path
+  - the same drill also verified PostgreSQL-backed `pullNotificationsAsync`, `renderNotificationAsync`, and `listEventsAsync`, confirming notification queue reads and event queries no longer depend on synchronous store access on the main runtime path
 - `2026-03-27 project policy and API skeleton local regression`
   - per-project policy isolation validated with distinct environment and channel defaults
   - gray rollout plan queries now return configured percentages, region, audience, scheduled build, and smoke workflow scaffolding

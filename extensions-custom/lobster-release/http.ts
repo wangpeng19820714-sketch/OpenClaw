@@ -598,7 +598,8 @@ export function createLobsterReleaseHttpHandler(params: {
           const environment =
             (url.searchParams.get("environment") as ReleaseEnvironment | null) ??
             config.defaultEnvironment;
-          const limitValue = Number(url.searchParams.get("limit") ?? "");
+          const limitRaw = url.searchParams.get("limit");
+          const limitValue = limitRaw ? Number(limitRaw) : Number.NaN;
           sendJson(
             res,
             200,
@@ -618,7 +619,8 @@ export function createLobsterReleaseHttpHandler(params: {
           const environment =
             (url.searchParams.get("environment") as ReleaseEnvironment | null) ??
             config.defaultEnvironment;
-          const limitValue = Number(url.searchParams.get("limit") ?? "");
+          const limitRaw = url.searchParams.get("limit");
+          const limitValue = limitRaw ? Number(limitRaw) : Number.NaN;
           sendJson(
             res,
             200,
@@ -638,7 +640,8 @@ export function createLobsterReleaseHttpHandler(params: {
           const environment =
             (url.searchParams.get("environment") as ReleaseEnvironment | null) ??
             config.defaultEnvironment;
-          const limitValue = Number(url.searchParams.get("limit") ?? "");
+          const limitRaw = url.searchParams.get("limit");
+          const limitValue = limitRaw ? Number(limitRaw) : Number.NaN;
           sendJson(
             res,
             200,

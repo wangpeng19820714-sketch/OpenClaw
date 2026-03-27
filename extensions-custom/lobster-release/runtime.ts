@@ -1351,7 +1351,7 @@ export class LobsterReleaseRuntime {
         },
       };
       await this.store.upsertRolloutAsync(canceled);
-      const canceledEvent = this.recordEvent({
+      const canceledEvent = await this.recordEventAsync({
         projectId: rollout.projectId,
         projectKey: rollout.projectKey,
         environment: rollout.environment,
@@ -1556,6 +1556,51 @@ export class LobsterReleaseRuntime {
             channel: params.channel,
           })
           .toSorted((left, right) => compareVersions(right.version, left.version))[0] ?? null);
+    const current = currentRelease ? parseVersion(currentRelease.version) : null;
+    const next =
+      params.bumpType === "major"
+        ? { major: (current?.major ?? 0) + 1, minor: 0, patch: 0 }
+        : params.bumpType === "minor"
+          ? { major: current?.major ?? 0, minor: (current?.minor ?? 0) + 1, patch: 0 }
+          : {
+              major: current?.major ?? 0,
+              minor: current?.minor ?? 0,
+              patch: (current?.patch ?? 0) + 1,
+            };
+    return {
+      version: `${next.major}.${next.minor}.${next.patch}`,
+      bumpType: params.bumpType,
+      source: "suggested",
+      baselineStrategy:
+        params.bumpType === "major" ? "reset" : params.bumpType === "minor" ? "validate" : "reuse",
+    };
+  }
+
+  async suggestVersionAsync(params: {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    bumpType: "patch" | "minor" | "major";
+  }): Promise<{
+    version: string;
+    bumpType: "patch" | "minor" | "major";
+    source: "suggested";
+    baselineStrategy: "reuse" | "validate" | "reset";
+  }> {
+    const channelState = await this.getChannelStateAsync(
+      params.projectKey,
+      params.environment,
+      params.channel,
+    );
+    const currentRelease = channelState?.currentReleaseId
+      ? await this.store.getReleaseAsync(channelState.currentReleaseId)
+      : ((
+          await this.store.listReleasesAsync({
+            projectKey: params.projectKey,
+            environment: params.environment,
+            channel: params.channel,
+          })
+        ).toSorted((left, right) => compareVersions(right.version, left.version))[0] ?? null);
     const current = currentRelease ? parseVersion(currentRelease.version) : null;
     const next =
       params.bumpType === "major"
@@ -3654,7 +3699,7 @@ export class LobsterReleaseRuntime {
       updatedAt: new Date(failedAt).toISOString(),
     };
     await this.store.upsertNotificationAsync(next);
-    this.recordEvent({
+    await this.recordEventAsync({
       projectId: record.projectId,
       projectKey: record.projectKey,
       environment: record.environment,
@@ -3800,7 +3845,7 @@ export class LobsterReleaseRuntime {
         createdAt: now,
       });
     }
-    this.recordEvent({
+    await this.recordEventAsync({
       projectId: project.projectId,
       projectKey: project.projectKey,
       environment,
@@ -4550,7 +4595,7 @@ export class LobsterReleaseRuntime {
     if (!release || release.projectKey !== input.projectKey) {
       throw new Error(`release not found: ${input.releaseId}`);
     }
-    this.assertNoActiveRollback(
+    await this.assertNoActiveRollbackAsync(
       release.projectKey,
       release.environment,
       release.channel,
@@ -4623,7 +4668,7 @@ export class LobsterReleaseRuntime {
       build.updatedAt = nowIso();
       await this.store.upsertBuildAsync(build);
     }
-    this.recordEvent({
+    await this.recordEventAsync({
       projectId: release.projectId,
       projectKey: release.projectKey,
       environment: release.environment,
@@ -6847,7 +6892,7 @@ export class LobsterReleaseRuntime {
           ? input.latencyP95Ms
           : undefined,
     };
-    this.recordEvent({
+    await this.recordEventAsync({
       projectId: rollout.projectId,
       projectKey: rollout.projectKey,
       environment: rollout.environment,
@@ -7517,15 +7562,21 @@ export class LobsterReleaseRuntime {
   }
 
   async generateManifest(releaseId: string, buildId: string): Promise<ReleaseManifest> {
-    const release = this.store.getRelease(releaseId);
-    const build = this.store.getBuild(buildId);
-    const provenance = this.store.getBuildProvenance(buildId);
+    const [release, build, provenance] = await Promise.all([
+      this.store.getReleaseAsync(releaseId),
+      this.store.getBuildAsync(buildId),
+      this.store.getBuildProvenanceAsync(buildId),
+    ]);
     if (!release || !build || !provenance) {
       throw new Error("missing release, build, or provenance for manifest generation");
     }
-    const artifacts = this.store
-      .listArtifactsForBuild(buildId)
-      .filter((artifact) => this.belongsToCurrentBuild(release, build, artifact));
+    const [artifacts, channelState] = await Promise.all([
+      this.store.listArtifactsForBuildAsync(buildId),
+      this.store.getChannelStateAsync(release.projectKey, release.environment, release.channel),
+    ]);
+    const filteredArtifacts = artifacts.filter((artifact) =>
+      this.belongsToCurrentBuild(release, build, artifact),
+    );
     const baseline =
       build.baselineVersion || build.baselineManifestUrl
         ? {
@@ -7539,8 +7590,10 @@ export class LobsterReleaseRuntime {
                   : ("reuse" as const),
           }
         : undefined;
-    const patchBundle = this.selectPatchBundleArtifact(artifacts);
-    const patchManifest = artifacts.find((artifact) => artifact.artifactType === "patch_manifest");
+    const patchBundle = this.selectPatchBundleArtifact(filteredArtifacts);
+    const patchManifest = filteredArtifacts.find(
+      (artifact) => artifact.artifactType === "patch_manifest",
+    );
     const manifest: ReleaseManifest = {
       manifestVersion: 1,
       project: release.projectKey,
@@ -7553,8 +7606,7 @@ export class LobsterReleaseRuntime {
       status: "published",
       stable: release.stable,
       frozen: release.frozen,
-      rollbackTarget: this.getChannelState(release.projectKey, release.environment, release.channel)
-        ?.previousReleaseId,
+      rollbackTarget: channelState?.previousReleaseId,
       publishedAt: release.publishedAt,
       git: {
         branch: release.git.branch,
@@ -7569,7 +7621,7 @@ export class LobsterReleaseRuntime {
       },
       compatibility: this.compatibilityForRelease(release),
       baseline,
-      artifacts: artifacts.map((artifact) => ({
+      artifacts: filteredArtifacts.map((artifact) => ({
         type: artifact.artifactType,
         platform: artifact.platform,
         fileName: artifact.fileName,
@@ -7599,7 +7651,7 @@ export class LobsterReleaseRuntime {
     await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
     await fs.writeFile(filePath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     const manifestUrl = this.manifestPublicUrl(release);
-    this.store.upsertRelease({
+    await this.store.upsertReleaseAsync({
       ...release,
       manifestPath: filePath,
       manifestUrl,
