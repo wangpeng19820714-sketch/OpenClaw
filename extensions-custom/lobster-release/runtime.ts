@@ -3211,7 +3211,11 @@ export class LobsterReleaseRuntime {
     return { build: nextBuild, release: nextRelease };
   }
 
-  async approveRelease(releaseId: string, operator = "system"): Promise<ReleaseRecord> {
+  async approveRelease(
+    releaseId: string,
+    operator = "system",
+    options?: { allowActiveRollout?: boolean },
+  ): Promise<ReleaseRecord> {
     const release = this.store.getRelease(releaseId);
     if (!release) {
       throw new Error(`release not found: ${releaseId}`);
@@ -3222,7 +3226,9 @@ export class LobsterReleaseRuntime {
       release.channel,
       "approve-release",
     );
-    this.assertNoBlockingRolloutForApproval(release);
+    if (options?.allowActiveRollout !== true) {
+      this.assertNoBlockingRolloutForApproval(release);
+    }
     if (release.frozen) {
       throw new Error(`release is frozen: ${releaseId}`);
     }
@@ -4216,7 +4222,9 @@ export class LobsterReleaseRuntime {
       release &&
       release.status !== "published"
     ) {
-      await this.approveRelease(release.releaseId, input.operator ?? "system");
+      await this.approveRelease(release.releaseId, input.operator ?? "system", {
+        allowActiveRollout: true,
+      });
     }
     this.recordEvent({
       projectId: rollout.projectId,

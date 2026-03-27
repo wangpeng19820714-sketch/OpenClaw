@@ -825,7 +825,7 @@ describe("lobster-release runtime", () => {
     ).rejects.toThrow("project region is not allowed");
   });
 
-  it("creates rollouts, resolves channel routing, and completes rollout publish", async () => {
+  it("creates rollouts, resolves channel routing, and publishes from an active rollout", async () => {
     const runtime = await createRuntimeWithConfig({
       defaultProjectKey: "projectb",
       projects: {
@@ -951,12 +951,12 @@ describe("lobster-release runtime", () => {
     const completed = await runtime.advanceRollout({
       projectKey: "projectb",
       rolloutId: rollout.rolloutId,
-      trafficPercent: 100,
-      complete: true,
+      trafficPercent: 50,
       publishRelease: true,
       operator: "ops",
     });
-    expect(completed.status).toBe("completed");
+    expect(completed.status).toBe("active");
+    expect(completed.trafficPercent).toBe(50);
     expect(runtime.getChannelState("projectb", "production", "release")?.currentReleaseId).toBe(
       candidate.release.releaseId,
     );

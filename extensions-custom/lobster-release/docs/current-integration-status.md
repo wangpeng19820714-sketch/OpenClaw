@@ -204,6 +204,12 @@ The following live release regressions were completed successfully:
   - route resolution now returns the rollout release for matching buckets and the stable channel pointer for non-matching buckets
   - rollback approval now cancels active rollouts on the same channel before completing pointer switch
   - HTTP integration tests validated `GET /projects/:projectKey/channels/:channel/rollouts`, `POST /projects/:projectKey/channels/:channel/rollouts`, `POST /projects/:projectKey/rollouts/:rolloutId/advance`, `POST /projects/:projectKey/rollouts/:rolloutId/cancel`, and `GET /projects/:projectKey/channels/:channel/route`
+- `2026-03-27 live gamexpert rollout drill`
+  - created live candidate release `1.2.22` on `gamexpert/staging/beta`
+  - active rollout `rlt_mn89aacy_7897f354` routed bucket `5` to the rollout release and bucket `75` to the stable channel pointer `1.2.18`
+  - `advanceRollout({ trafficPercent: 50, publishRelease: true })` published `1.2.22` while keeping the rollout active for continued traffic shaping
+  - rollback `rbk_mn89bxlt_06d22f9f` restored the beta pointer back to `1.2.18`
+  - the active rollout was automatically canceled during rollback
 
 ## Current Verified State
 
