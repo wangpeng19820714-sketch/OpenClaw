@@ -7,6 +7,7 @@ This document defines the first implementation contract for:
 - release creation and trigger
 - release graph
 - build provenance
+- maintenance and retention
 - patch baseline resolution
 - Jenkins callbacks
 - rollback
@@ -238,6 +239,92 @@ Response:
 ### 5.1 Build Provenance
 
 `GET /api/projects/:projectKey/builds/:buildId/provenance`
+
+Response highlights:
+
+- `sourceGit*`
+- `jenkinsJob`
+- `jenkinsBuildNumber`
+- `baselineVersion`
+- `baselineManifestUrl`
+- optional archived CI environment fields:
+  - `godotVersion`
+  - `godotBin`
+  - `dotnetVersion`
+  - `exportPresets`
+  - `workspaceRevision`
+  - `configFingerprint`
+  - `assetGroupsFingerprint`
+  - `scriptsFingerprint`
+  - `envSnapshot.configVersion`
+  - `envSnapshot.scriptVersions`
+
+## 6. Maintenance APIs
+
+### 6.1 Store Status
+
+`GET /api/projects/:projectKey/store/status`
+
+Response:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "schema": {
+      "metaKey": "store_schema_version",
+      "schemaVersion": 1
+    },
+    "counts": {
+      "releases": 42,
+      "builds": 45,
+      "notifications": 8,
+      "failedNotifications": 1,
+      "stableReleases": 18
+    },
+    "retention": {
+      "artifactRetentionDays": 21,
+      "auditRetentionDays": 30,
+      "maintenanceKeepStableCount": 10
+    }
+  }
+}
+```
+
+### 6.2 Run Maintenance
+
+`POST /api/projects/:projectKey/maintenance/run`
+
+Request:
+
+```json
+{
+  "dryRun": true
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "projectKey": "gamexpert",
+    "dryRun": true,
+    "artifactCleanup": {
+      "candidateReleaseIds": ["rel_20260322_001"],
+      "candidateBuildIds": ["bld_20260322_001"],
+      "candidateArtifactIds": ["art_20260322_001"],
+      "manifestReleaseIds": ["rel_20260322_001"]
+    },
+    "auditCleanup": {
+      "deletedEvents": 0,
+      "deletedNotifications": 0,
+      "deletedIdempotencyReceipts": 0
+    }
+  }
+}
+```
 
 Response:
 

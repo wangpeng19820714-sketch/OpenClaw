@@ -38,6 +38,9 @@ This document records the current live integration status of `lobster-release`, 
   - locally accessible artifacts are re-hashed and compared against reported SHA-256
   - versioned release artifacts must include the release version
   - versioned release artifacts must include Jenkins build number when one exists
+- Build provenance now accepts archived Jenkins environment snapshots.
+  - optional callback payloads can persist Godot version, export presets, config version, script versions, and fingerprint metadata
+  - archived CI environment details are merged into provenance instead of replacing earlier fields with blanks
 - Publish now runs a smoke gate that blocks missing required artifacts before a build can advance to `uploaded`.
 - Patch publish now checks patch compatibility metadata when it is present in the uploaded manifest schema.
 - Jenkins callback provenance now reuses the trigger-created build instead of creating a duplicate build.
@@ -45,6 +48,7 @@ This document records the current live integration status of `lobster-release`, 
 - Rollback now rewrites the target release manifest after channel pointer switch.
 - Rollback now marks the source release as `rolled_back` and can freeze the incident release.
 - Rollback now blocks incompatible targets when `minClientVersion` or `resourceProtocolVersion` would regress.
+- Active rollback requests now block ordinary trigger, approve, and promote flows on the same channel until rollback finishes.
 - Failed build completion now leaves the release in `failed` state and does not publish the channel.
 - Notification outbox is now implemented for `release.awaiting_approval`, `release.published`, `build.failed`, `build.canceled`, and `rollback.completed`.
 - `lobster-release` now exposes notifier agent tools:
@@ -60,6 +64,8 @@ This document records the current live integration status of `lobster-release`, 
   - `release_generate_notes`
   - `release_trigger`
   - `release_version_suggest`
+  - `release_store_status`
+  - `release_maintenance_run`
   - `release_stable_list`
   - `release_channel_history`
   - `release_baselines`
@@ -91,6 +97,19 @@ This document records the current live integration status of `lobster-release`, 
 - Repo-local notifier drain is now validated end to end:
   - `release_notifications_drain -> agent:pm:main -> message -> release_notifications_ack`
   - the `pm` notifier can consume a live outbox record and deliver it through Feishu using the rendered `message` plan
+- Store maintenance and retention are now implemented.
+  - store schema version metadata is initialized at startup
+  - maintenance can dry-run or execute artifact, manifest, event, notification, and idempotency cleanup
+  - protected releases keep current/previous pointers, frozen releases, and recent stable history intact
+- Project policy scaffolding is now implemented for multi-project operation.
+  - per-project defaults can define environments, channels, approval policy, regions, audiences, gray release percentages, scheduled builds, and smoke workflows
+  - release creation, CI baseline resolution, and CI callback normalization now resolve project/environment/channel through project policy instead of only using global defaults
+- Gray release planning and project catalog queries are now implemented.
+  - operators can query project policy catalogs and gray rollout plans before wiring live traffic controls
+- API integration skeleton is now implemented and validated locally.
+  - HTTP tests cover project catalog, gray plan, release creation, release graph, callback nonce replay rejection, store status, and maintenance endpoints
+- Local operator workflow now has a dedicated dev start entrypoint.
+  - `pnpm lobster:dev` starts the gateway with `configs/openclaw.json`
 
 ## Live Validation Results
 
@@ -167,6 +186,15 @@ The following live release regressions were completed successfully:
   - promote created fresh release-channel records while reusing source build artifacts and manifests
   - baseline lineage for `1.0.3` resolved as `1.0.2 -> 1.0.3`, `1.0.1 -> 1.0.2`, and `1.0.0 -> 1.0.1`
   - rollback audit entries now contain `manifestAction.audit` snapshots after completion
+- `2026-03-27 maintenance and provenance snapshot local regression`
+  - local CI provenance updates now merge optional `environmentInfo` without dropping previously captured baseline or executor metadata
+  - local maintenance dry run identified only non-protected releases for artifact cleanup
+  - store status now reports schema version, counts, and retention configuration
+  - a requested rollback now blocks ordinary `approve-release` on the same channel until rollback is resolved
+- `2026-03-27 project policy and API skeleton local regression`
+  - per-project policy isolation validated with distinct environment and channel defaults
+  - gray rollout plan queries now return configured percentages, region, audience, scheduled build, and smoke workflow scaffolding
+  - HTTP integration tests validated `GET /projects`, `GET /projects/:projectKey/policy`, `GET /projects/:projectKey/channels/:channel/gray-plan`, release creation, release graph, callback nonce replay rejection, store status, and maintenance routes
 
 ## Current Verified State
 

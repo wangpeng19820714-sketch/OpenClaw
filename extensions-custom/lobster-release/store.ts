@@ -50,6 +50,14 @@ type IdempotencyReceiptRecord = {
   updatedAt: string;
 };
 
+type SchemaMetaRecord = {
+  metaKey: string;
+  schemaVersion: number;
+  updatedAt: string;
+};
+
+const STORE_SCHEMA_VERSION = 1;
+
 export class LobsterReleaseStore {
   private readonly dbPath: string;
   private db: SqliteDatabase | undefined;
@@ -68,6 +76,11 @@ export class LobsterReleaseStore {
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
+
+      CREATE TABLE IF NOT EXISTS schema_meta (
+        meta_key TEXT PRIMARY KEY,
+        record_json TEXT NOT NULL
+      );
 
       CREATE TABLE IF NOT EXISTS projects (
         project_key TEXT PRIMARY KEY,
@@ -219,6 +232,11 @@ export class LobsterReleaseStore {
         record_json TEXT NOT NULL
       );
     `);
+    this.setSchemaMeta({
+      metaKey: "store_schema_version",
+      schemaVersion: STORE_SCHEMA_VERSION,
+      updatedAt: nowIso(),
+    });
   }
 
   close(): void {
@@ -231,6 +249,30 @@ export class LobsterReleaseStore {
       throw new Error("lobster-release store is not loaded");
     }
     return this.db;
+  }
+
+  private setSchemaMeta(record: SchemaMetaRecord): void {
+    this.getDb()
+      .prepare(
+        `INSERT INTO schema_meta (meta_key, record_json)
+         VALUES (?, ?)
+         ON CONFLICT(meta_key) DO UPDATE SET
+           record_json = excluded.record_json`,
+      )
+      .run(record.metaKey, JSON.stringify(record));
+  }
+
+  getSchemaInfo(): SchemaMetaRecord {
+    const row = this.getDb()
+      .prepare("SELECT record_json FROM schema_meta WHERE meta_key = ?")
+      .get("store_schema_version") as JsonRow | undefined;
+    return (
+      parseJson<SchemaMetaRecord>(row?.record_json) ?? {
+        metaKey: "store_schema_version",
+        schemaVersion: STORE_SCHEMA_VERSION,
+        updatedAt: nowIso(),
+      }
+    );
   }
 
   upsertProject(record: ProjectRecord): void {
@@ -398,6 +440,17 @@ export class LobsterReleaseStore {
     return rows
       .map((row) => parseJson<ArtifactRecord>(row.record_json))
       .filter((row): row is ArtifactRecord => Boolean(row));
+  }
+
+  deleteArtifacts(artifactIds: string[]): number {
+    if (artifactIds.length === 0) {
+      return 0;
+    }
+    const placeholders = artifactIds.map(() => "?").join(", ");
+    const result = this.getDb()
+      .prepare(`DELETE FROM artifacts WHERE artifact_id IN (${placeholders})`)
+      .run(...artifactIds);
+    return Number(result.changes ?? 0);
   }
 
   upsertChannelState(record: ChannelStateRecord): void {
@@ -665,6 +718,13 @@ export class LobsterReleaseStore {
     this.getDb().prepare("DELETE FROM callback_nonces WHERE expires_at <= ?").run(now);
   }
 
+  purgeIdempotencyReceipts(before: string): number {
+    const result = this.getDb()
+      .prepare("DELETE FROM idempotency_receipts WHERE updated_at <= ?")
+      .run(before);
+    return Number(result.changes ?? 0);
+  }
+
   claimCallbackNonce(record: CallbackNonceRecord): boolean {
     const result = this.getDb()
       .prepare(
@@ -774,6 +834,22 @@ export class LobsterReleaseStore {
       .filter((row): row is NotificationOutboxRecord => Boolean(row));
   }
 
+  purgeNotifications(params: {
+    before: string;
+    statuses?: NotificationOutboxRecord["status"][];
+  }): number {
+    const clauses = ["updated_at <= ?"];
+    const values: Array<string> = [params.before];
+    if (params.statuses?.length) {
+      clauses.push(`status IN (${params.statuses.map(() => "?").join(", ")})`);
+      values.push(...params.statuses);
+    }
+    const result = this.getDb()
+      .prepare(`DELETE FROM notification_outbox WHERE ${clauses.join(" AND ")}`)
+      .run(...values);
+    return Number(result.changes ?? 0);
+  }
+
   upsertBaseline(record: BaselineRecord): void {
     this.getDb()
       .prepare(
@@ -808,6 +884,11 @@ export class LobsterReleaseStore {
     return rows
       .map((row) => parseJson<BaselineRecord>(row.record_json))
       .filter((row): row is BaselineRecord => Boolean(row));
+  }
+
+  purgeEvents(before: string): number {
+    const result = this.getDb().prepare("DELETE FROM event_logs WHERE created_at <= ?").run(before);
+    return Number(result.changes ?? 0);
   }
 
   acquireLock(

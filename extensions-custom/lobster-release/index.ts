@@ -127,6 +127,56 @@ function createTools(
   };
   return [
     withRuntimeReady({
+      name: "release_project_catalog",
+      label: "Release Project Catalog",
+      description:
+        "Inspect configured lobster-release projects, environments, channels, and gray rollout defaults.",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute() {
+        return jsonToolResult(runtime.getProjectCatalog());
+      },
+    }),
+    withRuntimeReady({
+      name: "release_gray_plan",
+      label: "Release Gray Plan",
+      description:
+        "Inspect gray rollout pre-configuration, supported region/audience dimensions, and smoke workflows for a project channel.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          environment: Type.Optional(
+            Type.Unsafe<ReleaseEnvironment>({
+              type: "string",
+              enum: ["test", "staging", "production"],
+            }),
+          ),
+          channel: Type.Optional(
+            Type.Unsafe<ReleaseChannel>({ type: "string", enum: ["dev", "beta", "release"] }),
+          ),
+          region: Type.Optional(Type.String({ minLength: 1 })),
+          audience: Type.Optional(Type.String({ minLength: 1 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.getGrayReleasePlan({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            environment:
+              typeof params.environment === "string"
+                ? (params.environment as ReleaseEnvironment)
+                : undefined,
+            channel:
+              typeof params.channel === "string" ? (params.channel as ReleaseChannel) : undefined,
+            region: typeof params.region === "string" ? params.region : undefined,
+            audience: typeof params.audience === "string" ? params.audience : undefined,
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
       name: "release_notifications_drain",
       label: "Release Notifications Drain",
       description: "Start the dedicated lobster notifier agent to process queued notifications.",
@@ -302,6 +352,15 @@ function createTools(
             ),
           ),
           targets: Type.Optional(TargetsSchema),
+          scope: Type.Optional(
+            Type.Object(
+              {
+                region: Type.Optional(Type.String({ minLength: 1 })),
+                audience: Type.Optional(Type.String({ minLength: 1 })),
+              },
+              { additionalProperties: false },
+            ),
+          ),
           notes: Type.Optional(Type.String()),
           triggerBuild: Type.Optional(Type.Boolean()),
         },
@@ -322,6 +381,19 @@ function createTools(
               ? (params.git as { url?: string; branch?: string; commit?: string; tag?: string })
               : undefined,
           targets: normalizeTargets(params.targets),
+          scope:
+            params.scope && typeof params.scope === "object"
+              ? {
+                  region:
+                    typeof (params.scope as Record<string, unknown>).region === "string"
+                      ? ((params.scope as Record<string, unknown>).region as string)
+                      : undefined,
+                  audience:
+                    typeof (params.scope as Record<string, unknown>).audience === "string"
+                      ? ((params.scope as Record<string, unknown>).audience as string)
+                      : undefined,
+                }
+              : undefined,
           notes: typeof params.notes === "string" ? params.notes : undefined,
           versionSource:
             typeof params.versionSource === "string"
@@ -395,6 +467,48 @@ function createTools(
               ? params.channel
               : "beta") as ReleaseChannel,
             bumpType: params.bumpType as "patch" | "minor" | "major",
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_store_status",
+      label: "Release Store Status",
+      description: "Inspect lobster-release schema version, counts, and retention settings.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          runtime.getStoreStatus(
+            typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+          ),
+        );
+      },
+    }),
+    withRuntimeReady({
+      name: "release_maintenance_run",
+      label: "Release Maintenance Run",
+      description:
+        "Preview or execute lobster-release retention cleanup for artifacts, manifests, and audit records.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          dryRun: Type.Optional(Type.Boolean()),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          await runtime.runMaintenance({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            dryRun: params.dryRun !== false,
           }),
         );
       },
@@ -961,6 +1075,8 @@ const plugin = {
 
     api.registerTool(() => createTools(runtime, config.defaultProjectKey, api.runtime, config), {
       names: [
+        "release_project_catalog",
+        "release_gray_plan",
         "release_notifications_drain",
         "release_notifications_render",
         "release_notifications_pull",
@@ -972,6 +1088,8 @@ const plugin = {
         "release_create",
         "release_trigger",
         "release_version_suggest",
+        "release_store_status",
+        "release_maintenance_run",
         "release_status",
         "release_generate_notes",
         "release_stable_list",

@@ -2,12 +2,13 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PluginLogger } from "openclaw/plugin-sdk/lobster";
-import type { LobsterReleaseConfig } from "./config.js";
+import type { LobsterReleaseConfig, LobsterReleaseProjectPolicy } from "./config.js";
 import { LobsterReleaseStore } from "./store.js";
 import type {
   ArtifactRecord,
   BaselineRecord,
   CiBuildRequest,
+  CiBuildEnvironmentInfo,
   CiFinishRequest,
   CiPublishArtifact,
   CiPublishRequest,
@@ -40,6 +41,16 @@ function createId(prefix: string): string {
 
 function sha256Text(text: string): string {
   return crypto.createHash("sha256").update(text).digest("hex");
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 const NOTIFICATION_SENDING_TIMEOUT_MS = 5 * 60_000;
@@ -98,13 +109,14 @@ export class LobsterReleaseRuntime {
     if (existing) {
       return existing;
     }
+    const policy = this.getProjectPolicy(projectKey);
     const now = nowIso();
     const project: ProjectRecord = {
       projectId: createId("prj"),
       projectKey,
-      name: projectKey,
-      engine: "godot",
-      defaultChannel: "dev",
+      name: policy.name ?? projectKey,
+      engine: policy.engine ?? "godot",
+      defaultChannel: policy.defaultChannel ?? "dev",
       createdAt: now,
       updatedAt: now,
     };
@@ -231,6 +243,99 @@ export class LobsterReleaseRuntime {
     });
   }
 
+  private getProjectPolicy(projectKey: string): LobsterReleaseProjectPolicy {
+    return (
+      this.config.projects[projectKey] ??
+      this.config.projects[this.config.defaultProjectKey] ?? {
+        environments: ["test", "staging", "production"],
+        channels: ["dev", "beta", "release"],
+        requiresApproval: { beta: true, release: true },
+        regions: [],
+        audiences: [],
+        grayRelease: {
+          enabled: false,
+          rolloutPercentages: [5, 10, 25, 50, 100],
+          stickiness: "account",
+        },
+        scheduledBuilds: [],
+        smokeWorkflows: [],
+      }
+    );
+  }
+
+  private resolveProjectEnvironment(projectKey: string, environment?: string): ReleaseEnvironment {
+    const policy = this.getProjectPolicy(projectKey);
+    const resolved = (
+      typeof environment === "string" && environment
+        ? environment
+        : (policy.defaultEnvironment ?? this.config.defaultEnvironment)
+    ) as ReleaseEnvironment;
+    if (!policy.environments.includes(resolved)) {
+      throw new Error(`project environment is not allowed: ${projectKey}/${resolved}`);
+    }
+    return resolved;
+  }
+
+  private resolveProjectChannel(projectKey: string, channel?: string): ReleaseChannel {
+    const policy = this.getProjectPolicy(projectKey);
+    const resolved = (
+      typeof channel === "string" && channel
+        ? channel
+        : (policy.defaultChannel ?? this.config.defaultChannel)
+    ) as ReleaseChannel;
+    if (!policy.channels.includes(resolved)) {
+      throw new Error(`project channel is not allowed: ${projectKey}/${resolved}`);
+    }
+    return resolved;
+  }
+
+  private assertProjectScope(
+    projectKey: string,
+    environment: ReleaseEnvironment,
+    channel: ReleaseChannel,
+    scope?: {
+      region?: string;
+      audience?: string;
+    },
+  ): void {
+    const policy = this.getProjectPolicy(projectKey);
+    if (!policy.environments.includes(environment)) {
+      throw new Error(`project environment is not allowed: ${projectKey}/${environment}`);
+    }
+    if (!policy.channels.includes(channel)) {
+      throw new Error(`project channel is not allowed: ${projectKey}/${channel}`);
+    }
+    if (scope?.region && policy.regions.length > 0 && !policy.regions.includes(scope.region)) {
+      throw new Error(`project region is not allowed: ${projectKey}/${scope.region}`);
+    }
+    if (
+      scope?.audience &&
+      policy.audiences.length > 0 &&
+      !policy.audiences.includes(scope.audience)
+    ) {
+      throw new Error(`project audience is not allowed: ${projectKey}/${scope.audience}`);
+    }
+  }
+
+  private autoPublishDevForProject(projectKey: string): boolean {
+    const policy = this.getProjectPolicy(projectKey);
+    return typeof policy.autoPublishDev === "boolean"
+      ? policy.autoPublishDev
+      : this.config.autoPublishDev;
+  }
+
+  private requiresApproval(projectKey: string, channel: ReleaseChannel): boolean {
+    const policy = this.getProjectPolicy(projectKey);
+    const explicit = policy.requiresApproval[channel];
+    if (typeof explicit === "boolean") {
+      return explicit;
+    }
+    if (channel === "dev") {
+      return !this.autoPublishDevForProject(projectKey);
+    }
+    return true;
+  }
+
   claimCallbackNonce(scope: string, nonce: string, requestHash: string): boolean {
     this.store.purgeExpiredCallbackNonces();
     const now = Date.now();
@@ -244,18 +349,43 @@ export class LobsterReleaseRuntime {
     });
   }
 
-  private normalizeCiChannel(raw?: string): ReleaseChannel {
+  private normalizeCiProjectKey(raw?: string): string {
+    const value = raw?.trim();
+    return value || this.config.defaultProjectKey;
+  }
+
+  private normalizeCiChannel(
+    raw?: string,
+    projectKey = this.config.defaultProjectKey,
+  ): ReleaseChannel {
     const value = raw?.trim().toLowerCase();
     if (!value || value === "default") {
-      return this.config.defaultChannel;
+      return this.resolveProjectChannel(projectKey);
     }
     if (value === "dev") {
-      return "dev";
+      return this.resolveProjectChannel(projectKey, "dev");
     }
     if (value === "release" || value === "stable" || value === "prod" || value === "production") {
-      return "release";
+      return this.resolveProjectChannel(projectKey, "release");
     }
-    return "beta";
+    return this.resolveProjectChannel(projectKey, "beta");
+  }
+
+  private normalizeCiEnvironment(
+    raw?: string,
+    projectKey = this.config.defaultProjectKey,
+  ): ReleaseEnvironment {
+    const value = raw?.trim().toLowerCase();
+    if (!value || value === "default") {
+      return this.resolveProjectEnvironment(projectKey);
+    }
+    if (value === "test") {
+      return this.resolveProjectEnvironment(projectKey, "test");
+    }
+    if (value === "production" || value === "prod" || value === "release") {
+      return this.resolveProjectEnvironment(projectKey, "production");
+    }
+    return this.resolveProjectEnvironment(projectKey, "staging");
   }
 
   private parseCiBuildNumber(raw: string | number | undefined): number | undefined {
@@ -459,11 +589,120 @@ export class LobsterReleaseRuntime {
     };
   }
 
+  private buildCiEnvironmentPatch(info: CiBuildEnvironmentInfo | undefined): Omit<
+    Partial<BuildProvenanceRecord>,
+    "parameters" | "envSnapshot" | "exportPresets"
+  > & {
+    exportPresets: string[];
+    envSnapshot: Record<string, unknown>;
+    parameters: Record<string, unknown>;
+  } {
+    const scriptVersions = asRecord(info?.scriptVersions);
+    const extraParameters = asRecord(info?.parameters) ?? {};
+    return {
+      godotVersion: typeof info?.godotVersion === "string" ? info.godotVersion : undefined,
+      godotBin: typeof info?.godotBin === "string" ? info.godotBin : undefined,
+      dotnetVersion: typeof info?.dotnetVersion === "string" ? info.dotnetVersion : undefined,
+      workspaceRevision:
+        typeof info?.workspaceRevision === "string" ? info.workspaceRevision : undefined,
+      configFingerprint:
+        typeof info?.configFingerprint === "string" ? info.configFingerprint : undefined,
+      assetGroupsFingerprint:
+        typeof info?.assetGroupsFingerprint === "string" ? info.assetGroupsFingerprint : undefined,
+      scriptsFingerprint:
+        typeof info?.scriptsFingerprint === "string" ? info.scriptsFingerprint : undefined,
+      exportPresets: Array.isArray(info?.exportPresets)
+        ? uniqueStrings(
+            info.exportPresets.filter((value): value is string => typeof value === "string"),
+          )
+        : [],
+      envSnapshot: {
+        ...asRecord(info?.envSnapshot),
+        ...(typeof info?.configVersion === "string" ? { configVersion: info.configVersion } : {}),
+        ...(scriptVersions ? { scriptVersions } : {}),
+      },
+      parameters: {
+        ...extraParameters,
+        ...(typeof info?.configVersion === "string" ? { configVersion: info.configVersion } : {}),
+        ...(scriptVersions ? { scriptVersions } : {}),
+      },
+    };
+  }
+
+  private upsertCiProvenance(
+    build: BuildRecord,
+    request: CiBuildRequest,
+    extras?: {
+      executorNode?: string;
+      executorLabel?: string;
+    },
+  ): BuildProvenanceRecord {
+    const current = this.store.getBuildProvenance(build.buildId) ?? this.createProvenance(build);
+    const environmentPatch = this.buildCiEnvironmentPatch(request.environmentInfo);
+    const parameters = {
+      ...current.parameters,
+      requestId: request.requestId,
+      pipelineUrl: request.pipelineUrl,
+      targets: request.targets ?? [],
+      baselineVersion: build.baselineVersion,
+      baselineManifestUrl: build.baselineManifestUrl,
+      ...environmentPatch.parameters,
+      ...(extras?.executorNode ? { executorNode: extras.executorNode } : {}),
+      ...(extras?.executorLabel ? { executorLabel: extras.executorLabel } : {}),
+    };
+    const next: BuildProvenanceRecord = {
+      ...current,
+      sourceGitUrl: build.sourceGitUrl,
+      sourceGitBranch: build.sourceGitBranch,
+      sourceGitCommit: build.sourceGitCommit,
+      sourceGitCommitShort: build.sourceGitCommitShort,
+      jenkinsJob: build.jenkinsJob,
+      jenkinsBuildNumber: build.jenkinsBuildNumber,
+      jenkinsQueueId: build.jenkinsQueueId,
+      baselineVersion: build.baselineVersion,
+      baselineManifestUrl: build.baselineManifestUrl,
+      ...(environmentPatch.godotVersion ? { godotVersion: environmentPatch.godotVersion } : {}),
+      ...(environmentPatch.godotBin ? { godotBin: environmentPatch.godotBin } : {}),
+      ...(environmentPatch.dotnetVersion ? { dotnetVersion: environmentPatch.dotnetVersion } : {}),
+      ...(environmentPatch.workspaceRevision
+        ? { workspaceRevision: environmentPatch.workspaceRevision }
+        : {}),
+      ...(environmentPatch.configFingerprint
+        ? { configFingerprint: environmentPatch.configFingerprint }
+        : {}),
+      ...(environmentPatch.assetGroupsFingerprint
+        ? { assetGroupsFingerprint: environmentPatch.assetGroupsFingerprint }
+        : {}),
+      ...(environmentPatch.scriptsFingerprint
+        ? { scriptsFingerprint: environmentPatch.scriptsFingerprint }
+        : {}),
+      ...(extras?.executorNode ? { executorNode: extras.executorNode } : {}),
+      ...(extras?.executorLabel ? { executorLabel: extras.executorLabel } : {}),
+      exportPresets: uniqueStrings([
+        ...(current.exportPresets ?? []),
+        ...environmentPatch.exportPresets,
+      ]),
+      envSnapshot: {
+        ...current.envSnapshot,
+        ...environmentPatch.envSnapshot,
+      },
+      parameters,
+      capturedAt: nowIso(),
+      provenanceHash: sha256Text(JSON.stringify(parameters)),
+    };
+    this.store.upsertBuildProvenance(next);
+    return next;
+  }
+
   private ensureCiRelease(request: CiBuildRequest): ReleaseRecord {
-    const projectKey = this.config.defaultProjectKey;
-    const environment = this.config.defaultEnvironment;
-    const channel = this.normalizeCiChannel(request.app?.channel);
+    const projectKey = this.normalizeCiProjectKey(request.app?.projectKey);
+    const environment = this.normalizeCiEnvironment(request.app?.environment, projectKey);
+    const channel = this.normalizeCiChannel(request.app?.channel, projectKey);
     const version = this.versionFromCi(request);
+    this.assertProjectScope(projectKey, environment, channel, {
+      region: request.app?.region?.trim() || undefined,
+      audience: request.app?.audience?.trim() || undefined,
+    });
     const existing = this.findReleaseByVersion({
       projectKey,
       environment,
@@ -509,6 +748,10 @@ export class LobsterReleaseRuntime {
       metadata: {
         targets: this.buildTargetsFromCi(request),
         source: "jenkins-ci",
+        scope: {
+          region: request.app?.region?.trim() || undefined,
+          audience: request.app?.audience?.trim() || undefined,
+        },
       },
     };
     this.store.upsertRelease(release);
@@ -549,30 +792,7 @@ export class LobsterReleaseRuntime {
         currentBuildId: nextBuild.buildId,
         updatedAt: nowIso(),
       });
-      const currentProvenance =
-        this.store.getBuildProvenance(nextBuild.buildId) ?? this.createProvenance(nextBuild);
-      const parameters = {
-        ...currentProvenance.parameters,
-        requestId: request.requestId,
-        pipelineUrl: request.pipelineUrl,
-        targets: request.targets ?? [],
-        baselineVersion: nextBuild.baselineVersion,
-        baselineManifestUrl: nextBuild.baselineManifestUrl,
-      };
-      this.store.upsertBuildProvenance({
-        ...currentProvenance,
-        sourceGitUrl: nextBuild.sourceGitUrl,
-        sourceGitBranch: nextBuild.sourceGitBranch,
-        sourceGitCommit: nextBuild.sourceGitCommit,
-        sourceGitCommitShort: nextBuild.sourceGitCommitShort,
-        jenkinsJob: nextBuild.jenkinsJob,
-        jenkinsBuildNumber: nextBuild.jenkinsBuildNumber,
-        baselineVersion: nextBuild.baselineVersion,
-        baselineManifestUrl: nextBuild.baselineManifestUrl,
-        parameters,
-        capturedAt: nowIso(),
-        provenanceHash: sha256Text(JSON.stringify(parameters)),
-      });
+      this.upsertCiProvenance(nextBuild, request);
       return { release, build: nextBuild };
     }
     const now = nowIso();
@@ -608,15 +828,7 @@ export class LobsterReleaseRuntime {
       status: "building",
       updatedAt: now,
     });
-    this.store.upsertBuildProvenance(
-      this.createProvenance(build, {
-        parameters: {
-          requestId: request.requestId,
-          pipelineUrl: request.pipelineUrl,
-          targets: request.targets ?? [],
-        },
-      }),
-    );
+    this.upsertCiProvenance(build, request);
     return { release, build };
   }
 
@@ -1445,19 +1657,22 @@ export class LobsterReleaseRuntime {
     versionBumpType: ReleaseRecord["versionBumpType"];
     build?: Awaited<ReturnType<LobsterReleaseRuntime["triggerRelease"]>>;
   }> {
+    const environment = this.resolveProjectEnvironment(input.projectKey, input.environment);
+    const channel = this.resolveProjectChannel(input.projectKey, input.channel);
+    this.assertProjectScope(input.projectKey, environment, channel, input.scope);
     const project = this.ensureProject(input.projectKey);
     const existing = this.findReleaseByVersion({
       projectKey: input.projectKey,
-      environment: input.environment,
-      channel: input.channel,
+      environment,
+      channel,
       version: input.version,
     });
     if (existing) {
       throw new Error(
-        `release version already exists for ${input.projectKey}/${input.environment}/${input.channel}: ${input.version}`,
+        `release version already exists for ${input.projectKey}/${environment}/${channel}: ${input.version}`,
       );
     }
-    const currentState = this.getChannelState(input.projectKey, input.environment, input.channel);
+    const currentState = this.getChannelState(input.projectKey, environment, channel);
     const currentRelease = currentState?.currentReleaseId
       ? this.store.getRelease(currentState.currentReleaseId)
       : null;
@@ -1468,8 +1683,8 @@ export class LobsterReleaseRuntime {
       releaseId: createId("rel"),
       projectId: project.projectId,
       projectKey: input.projectKey,
-      environment: input.environment,
-      channel: input.channel,
+      environment,
+      channel,
       version: nextParsed.raw,
       displayVersion: nextParsed.raw,
       versionScheme: "semver3",
@@ -1494,6 +1709,7 @@ export class LobsterReleaseRuntime {
       updatedAt: now,
       metadata: {
         targets: input.targets,
+        ...(input.scope ? { scope: input.scope } : {}),
       },
     };
     this.store.upsertRelease(release);
@@ -1505,7 +1721,7 @@ export class LobsterReleaseRuntime {
         fromReleaseId: currentRelease.releaseId,
         toReleaseId: release.releaseId,
         relationType: "derived_from",
-        context: { channel: input.channel, environment: input.environment },
+        context: { channel, environment },
         createdBy: input.createdBy,
         createdAt: now,
       });
@@ -1513,14 +1729,15 @@ export class LobsterReleaseRuntime {
     this.recordEvent({
       projectId: project.projectId,
       projectKey: project.projectKey,
-      environment: input.environment,
+      environment,
       objectType: "release",
       objectId: release.releaseId,
       eventType: "release.created",
       payload: {
         version: release.version,
-        channel: release.channel,
-        environment: release.environment,
+        channel,
+        environment,
+        scope: input.scope ?? null,
       },
       createdBy: input.createdBy,
     });
@@ -2134,6 +2351,30 @@ export class LobsterReleaseRuntime {
     }
   }
 
+  private assertNoActiveRollback(
+    projectKey: string,
+    environment: ReleaseEnvironment,
+    channel: ReleaseChannel,
+    action: string,
+  ): void {
+    const active = this.store
+      .listRollbacks({
+        projectKey,
+        environment,
+        channel,
+        limit: 20,
+      })
+      .find(
+        (rollback) =>
+          rollback.status === "requested" ||
+          rollback.status === "approved" ||
+          rollback.status === "executing",
+      );
+    if (active) {
+      throw new Error(`rollback.in_progress: ${action} blocked by rollback ${active.rollbackId}`);
+    }
+  }
+
   async triggerRelease(input: TriggerReleaseInput): Promise<{
     releaseId: string;
     buildId: string;
@@ -2145,6 +2386,12 @@ export class LobsterReleaseRuntime {
     if (!release || release.projectKey !== input.projectKey) {
       throw new Error(`release not found: ${input.releaseId}`);
     }
+    this.assertNoActiveRollback(
+      release.projectKey,
+      release.environment,
+      release.channel,
+      "trigger-release",
+    );
     const baseline =
       release.metadata && (release.metadata.targets as BuildTargets | undefined)?.patch
         ? this.resolveBaseline({
@@ -2645,15 +2892,20 @@ export class LobsterReleaseRuntime {
       ...release,
       status:
         payload.status === "success"
-          ? release.channel === "dev" && this.config.autoPublishDev
+          ? release.channel === "dev" && !this.requiresApproval(release.projectKey, release.channel)
             ? "published"
             : "awaiting_approval"
           : "failed",
-      stable: payload.status === "success" && release.channel === "dev",
+      stable:
+        payload.status === "success" &&
+        release.channel === "dev" &&
+        !this.requiresApproval(release.projectKey, release.channel),
       frozen: payload.status === "success" ? release.frozen : false,
       updatedAt: nowIso(),
       publishedAt:
-        payload.status === "success" && release.channel === "dev" && this.config.autoPublishDev
+        payload.status === "success" &&
+        release.channel === "dev" &&
+        !this.requiresApproval(release.projectKey, release.channel)
           ? nowIso()
           : release.publishedAt,
     };
@@ -2784,6 +3036,12 @@ export class LobsterReleaseRuntime {
     if (!release) {
       throw new Error(`release not found: ${releaseId}`);
     }
+    this.assertNoActiveRollback(
+      release.projectKey,
+      release.environment,
+      release.channel,
+      "approve-release",
+    );
     if (release.frozen) {
       throw new Error(`release is frozen: ${releaseId}`);
     }
@@ -2868,6 +3126,12 @@ export class LobsterReleaseRuntime {
     if (!source || source.projectKey !== params.projectKey) {
       throw new Error(`release not found: ${params.sourceReleaseId}`);
     }
+    this.assertNoActiveRollback(
+      params.projectKey,
+      params.targetEnvironment,
+      params.targetChannel,
+      "promote-release",
+    );
     if (source.status !== "published" || !source.stable) {
       throw new Error("only stable published releases can be promoted");
     }
@@ -3266,10 +3530,11 @@ export class LobsterReleaseRuntime {
         baselineSha256: "",
       };
     }
+    const projectKey = this.normalizeCiProjectKey(request.app?.projectKey);
     const baseline = this.resolveBaseline({
-      projectKey: this.config.defaultProjectKey,
-      environment: this.config.defaultEnvironment,
-      channel: this.normalizeCiChannel(request.app?.channel),
+      projectKey,
+      environment: this.normalizeCiEnvironment(request.app?.environment, projectKey),
+      channel: this.normalizeCiChannel(request.app?.channel, projectKey),
       targetVersion: this.versionFromCi(request),
       platform: this.platformFromCi(request, targets),
     });
@@ -3302,6 +3567,7 @@ export class LobsterReleaseRuntime {
       jenkinsBuildNumber: this.parseCiBuildNumber(request.buildNumber) ?? build.jenkinsBuildNumber,
       startedAt: nowIso(),
     });
+    this.upsertCiProvenance(next, request);
     this.recordEvent({
       projectId: release.projectId,
       projectKey: release.projectKey,
@@ -3324,6 +3590,7 @@ export class LobsterReleaseRuntime {
     request: CiPublishRequest,
   ): Promise<{ build: BuildRecord; manifest: ReleaseManifest }> {
     const { build, release } = this.ensureCiBuild(request);
+    this.upsertCiProvenance(build, request);
     const result = await this.recordBuildPublish(build.buildId, {
       environment: release.environment,
       channel: release.channel,
@@ -3359,6 +3626,7 @@ export class LobsterReleaseRuntime {
     request: CiFinishRequest,
   ): Promise<{ build: BuildRecord; release: ReleaseRecord }> {
     const { build, release } = this.ensureCiBuild(request);
+    this.upsertCiProvenance(build, request);
     const status =
       request.result?.toUpperCase() === "SUCCESS"
         ? "success"
@@ -3446,6 +3714,319 @@ export class LobsterReleaseRuntime {
   getReleaseProvenance(releaseId: string, mode: "latest" | "all" = "latest") {
     const records = this.store.listReleaseProvenance(releaseId);
     return mode === "latest" ? (records[0] ?? null) : records;
+  }
+
+  private retentionCutoffIso(days: number): string {
+    return new Date(Date.now() - days * 24 * 60 * 60_000).toISOString();
+  }
+
+  private isManagedCleanupPath(filePath: string): boolean {
+    const roots = [this.config.uploadDestinationDir, this.manifestsDir].filter(
+      (root): root is string => Boolean(root),
+    );
+    const resolvedFilePath = path.resolve(filePath);
+    return roots.some((root) => {
+      const relative = path.relative(path.resolve(root), resolvedFilePath);
+      return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+    });
+  }
+
+  private protectedReleaseIdsForMaintenance(projectKey: string): Set<string> {
+    const releases = this.store.listReleases({ projectKey });
+    const protectedIds = new Set<string>();
+    for (const release of releases) {
+      if (release.frozen) {
+        protectedIds.add(release.releaseId);
+      }
+    }
+    const groupKeys = new Set(
+      releases.map((release) => `${release.environment}:${release.channel}`),
+    );
+    for (const groupKey of groupKeys) {
+      const [environment, channel] = groupKey.split(":");
+      const channelState = this.getChannelState(
+        projectKey,
+        environment as ReleaseEnvironment,
+        channel as ReleaseChannel,
+      );
+      if (channelState?.currentReleaseId) {
+        protectedIds.add(channelState.currentReleaseId);
+      }
+      if (channelState?.previousReleaseId) {
+        protectedIds.add(channelState.previousReleaseId);
+      }
+      const recentStable = this.listStableReleases({
+        projectKey,
+        environment: environment as ReleaseEnvironment,
+        channel: channel as ReleaseChannel,
+        limit: this.config.maintenanceKeepStableCount,
+      });
+      for (const release of recentStable) {
+        protectedIds.add(release.releaseId);
+      }
+    }
+    return protectedIds;
+  }
+
+  getStoreStatus(projectKey = this.config.defaultProjectKey): {
+    schema: ReturnType<LobsterReleaseStore["getSchemaInfo"]>;
+    counts: {
+      releases: number;
+      builds: number;
+      notifications: number;
+      failedNotifications: number;
+      stableReleases: number;
+    };
+    retention: {
+      artifactRetentionDays: number;
+      auditRetentionDays: number;
+      maintenanceKeepStableCount: number;
+    };
+  } {
+    const releases = this.store.listReleases({ projectKey });
+    const builds = this.store.listBuilds({ projectKey });
+    const notifications = this.store.listNotifications();
+    return {
+      schema: this.store.getSchemaInfo(),
+      counts: {
+        releases: releases.length,
+        builds: builds.length,
+        notifications: notifications.length,
+        failedNotifications: notifications.filter((item) => item.status === "failed").length,
+        stableReleases: releases.filter((item) => item.stable).length,
+      },
+      retention: {
+        artifactRetentionDays: this.config.artifactRetentionDays,
+        auditRetentionDays: this.config.auditRetentionDays,
+        maintenanceKeepStableCount: this.config.maintenanceKeepStableCount,
+      },
+    };
+  }
+
+  getProjectCatalog(): {
+    defaultProjectKey: string;
+    projects: Array<{
+      projectKey: string;
+      name?: string;
+      engine?: string;
+      defaultEnvironment: ReleaseEnvironment;
+      defaultChannel: ReleaseChannel;
+      environments: ReleaseEnvironment[];
+      channels: ReleaseChannel[];
+      autoPublishDev: boolean;
+      requiresApproval: Partial<Record<ReleaseChannel, boolean>>;
+      regions: string[];
+      audiences: string[];
+      grayRelease: LobsterReleaseProjectPolicy["grayRelease"];
+      scheduledBuildCount: number;
+      smokeWorkflows: string[];
+    }>;
+  } {
+    const projectKeys = uniqueStrings([
+      this.config.defaultProjectKey,
+      ...Object.keys(this.config.projects),
+    ]);
+    return {
+      defaultProjectKey: this.config.defaultProjectKey,
+      projects: projectKeys.map((projectKey) => {
+        const policy = this.getProjectPolicy(projectKey);
+        return {
+          projectKey,
+          name: policy.name,
+          engine: policy.engine,
+          defaultEnvironment: policy.defaultEnvironment ?? this.config.defaultEnvironment,
+          defaultChannel: policy.defaultChannel ?? this.config.defaultChannel,
+          environments: policy.environments,
+          channels: policy.channels,
+          autoPublishDev: this.autoPublishDevForProject(projectKey),
+          requiresApproval: policy.requiresApproval,
+          regions: policy.regions,
+          audiences: policy.audiences,
+          grayRelease: policy.grayRelease,
+          scheduledBuildCount: policy.scheduledBuilds.length,
+          smokeWorkflows: policy.smokeWorkflows,
+        };
+      }),
+    };
+  }
+
+  getGrayReleasePlan(params: {
+    projectKey: string;
+    environment?: ReleaseEnvironment;
+    channel?: ReleaseChannel;
+    region?: string;
+    audience?: string;
+  }): {
+    projectKey: string;
+    environment: ReleaseEnvironment;
+    channel: ReleaseChannel;
+    grayRelease: LobsterReleaseProjectPolicy["grayRelease"];
+    scope: {
+      region?: string;
+      audience?: string;
+      supportedRegions: string[];
+      supportedAudiences: string[];
+    };
+    scheduledBuilds: LobsterReleaseProjectPolicy["scheduledBuilds"];
+    smokeWorkflows: string[];
+  } {
+    const environment = this.resolveProjectEnvironment(params.projectKey, params.environment);
+    const channel = this.resolveProjectChannel(params.projectKey, params.channel);
+    this.assertProjectScope(params.projectKey, environment, channel, {
+      region: params.region,
+      audience: params.audience,
+    });
+    const policy = this.getProjectPolicy(params.projectKey);
+    return {
+      projectKey: params.projectKey,
+      environment,
+      channel,
+      grayRelease: policy.grayRelease,
+      scope: {
+        region: params.region,
+        audience: params.audience,
+        supportedRegions: policy.regions,
+        supportedAudiences: policy.audiences,
+      },
+      scheduledBuilds: policy.scheduledBuilds,
+      smokeWorkflows: policy.smokeWorkflows,
+    };
+  }
+
+  async runMaintenance(params?: { projectKey?: string; dryRun?: boolean }): Promise<{
+    projectKey: string;
+    dryRun: boolean;
+    schema: ReturnType<LobsterReleaseStore["getSchemaInfo"]>;
+    retention: {
+      artifactRetentionDays: number;
+      auditRetentionDays: number;
+      maintenanceKeepStableCount: number;
+    };
+    protectedReleaseIds: string[];
+    artifactCleanup: {
+      candidateReleaseIds: string[];
+      candidateBuildIds: string[];
+      candidateArtifactIds: string[];
+      manifestReleaseIds: string[];
+      deletedFiles: string[];
+      deletedArtifactRows: number;
+      deletedManifestLinks: number;
+    };
+    auditCleanup: {
+      deletedEvents: number;
+      deletedNotifications: number;
+      deletedIdempotencyReceipts: number;
+    };
+  }> {
+    const projectKey = params?.projectKey ?? this.config.defaultProjectKey;
+    const dryRun = params?.dryRun !== false;
+    this.store.purgeExpiredLocks();
+    this.store.purgeExpiredCallbackNonces();
+    const artifactCutoff = this.retentionCutoffIso(this.config.artifactRetentionDays);
+    const auditCutoff = this.retentionCutoffIso(this.config.auditRetentionDays);
+    const protectedReleaseIds = this.protectedReleaseIdsForMaintenance(projectKey);
+    const releases = this.store.listReleases({ projectKey });
+    const candidateReleases = releases.filter((release) => {
+      const activityAt = release.publishedAt ?? release.updatedAt;
+      return !protectedReleaseIds.has(release.releaseId) && activityAt <= artifactCutoff;
+    });
+    const candidateReleaseIds = new Set(candidateReleases.map((release) => release.releaseId));
+    const candidateBuilds = this.store
+      .listBuilds({ projectKey })
+      .filter((build) => candidateReleaseIds.has(build.releaseId));
+    const artifactCandidates = candidateBuilds.flatMap((build) =>
+      this.store.listArtifactsForBuild(build.buildId),
+    );
+    const deletedFiles: string[] = [];
+    for (const artifact of artifactCandidates) {
+      const filePath = await this.resolveArtifactFilePath(artifact);
+      if (!filePath || !this.isManagedCleanupPath(filePath)) {
+        continue;
+      }
+      if (!dryRun && (await this.pathExists(filePath))) {
+        await fs.rm(filePath, { force: true });
+      }
+      deletedFiles.push(filePath);
+    }
+    const manifestReleases = candidateReleases.filter(
+      (release) => release.manifestPath && this.isManagedCleanupPath(release.manifestPath),
+    );
+    for (const release of manifestReleases) {
+      if (!release.manifestPath) {
+        continue;
+      }
+      if (!dryRun && (await this.pathExists(release.manifestPath))) {
+        await fs.rm(release.manifestPath, { force: true });
+      }
+      deletedFiles.push(release.manifestPath);
+      if (!dryRun) {
+        this.store.upsertRelease({
+          ...release,
+          manifestPath: undefined,
+          manifestUrl: undefined,
+          updatedAt: nowIso(),
+        });
+      }
+    }
+    const deletedArtifactRows = dryRun
+      ? artifactCandidates.length
+      : this.store.deleteArtifacts(artifactCandidates.map((artifact) => artifact.artifactId));
+    const deletedEvents = dryRun ? 0 : this.store.purgeEvents(auditCutoff);
+    const deletedNotifications = dryRun
+      ? 0
+      : this.store.purgeNotifications({
+          before: auditCutoff,
+          statuses: ["sent", "failed"],
+        });
+    const deletedIdempotencyReceipts = dryRun
+      ? 0
+      : this.store.purgeIdempotencyReceipts(auditCutoff);
+    const result = {
+      projectKey,
+      dryRun,
+      schema: this.store.getSchemaInfo(),
+      retention: {
+        artifactRetentionDays: this.config.artifactRetentionDays,
+        auditRetentionDays: this.config.auditRetentionDays,
+        maintenanceKeepStableCount: this.config.maintenanceKeepStableCount,
+      },
+      protectedReleaseIds: [...protectedReleaseIds],
+      artifactCleanup: {
+        candidateReleaseIds: candidateReleases.map((release) => release.releaseId),
+        candidateBuildIds: candidateBuilds.map((build) => build.buildId),
+        candidateArtifactIds: artifactCandidates.map((artifact) => artifact.artifactId),
+        manifestReleaseIds: manifestReleases.map((release) => release.releaseId),
+        deletedFiles,
+        deletedArtifactRows,
+        deletedManifestLinks: manifestReleases.length,
+      },
+      auditCleanup: {
+        deletedEvents,
+        deletedNotifications,
+        deletedIdempotencyReceipts,
+      },
+    };
+    this.recordSystemEvent({
+      projectKey,
+      environment: undefined,
+      objectType: "maintenance",
+      objectId: projectKey,
+      eventType: "maintenance.completed",
+      payload: {
+        dryRun,
+        retention: result.retention,
+        artifactCleanup: {
+          candidateReleaseCount: result.artifactCleanup.candidateReleaseIds.length,
+          candidateBuildCount: result.artifactCleanup.candidateBuildIds.length,
+          candidateArtifactCount: result.artifactCleanup.candidateArtifactIds.length,
+          deletedArtifactRows: result.artifactCleanup.deletedArtifactRows,
+          deletedManifestLinks: result.artifactCleanup.deletedManifestLinks,
+        },
+        auditCleanup: result.auditCleanup,
+      },
+      createdBy: "system",
+    });
+    return result;
   }
 
   private mapCiArtifactForBuild(

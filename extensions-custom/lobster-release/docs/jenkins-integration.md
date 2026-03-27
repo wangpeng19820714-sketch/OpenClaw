@@ -71,7 +71,24 @@ Jenkins 当前使用两类回调：
 - callback 最小限流
 - retryable 失败返回 `Retry-After`
 
-## 6. 当前联调结果
+## 6. 可选 provenance 扩展
+
+Jenkins 如果愿意补充构建环境快照，可以在 `start / publish / finish` 回调里附带：
+
+- `environmentInfo.godotVersion`
+- `environmentInfo.godotBin`
+- `environmentInfo.dotnetVersion`
+- `environmentInfo.exportPresets`
+- `environmentInfo.workspaceRevision`
+- `environmentInfo.configFingerprint`
+- `environmentInfo.assetGroupsFingerprint`
+- `environmentInfo.scriptsFingerprint`
+- `environmentInfo.configVersion`
+- `environmentInfo.scriptVersions`
+
+这些字段不会影响回调主流程，但会被归档进 build provenance，方便后续排查“同版本不同机器为什么产物不同”。
+
+## 7. 当前联调结果
 
 已经真实验证通过：
 

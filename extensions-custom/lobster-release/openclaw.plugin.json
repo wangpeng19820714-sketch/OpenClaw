@@ -8,6 +8,10 @@
       "help": "Used when tool or HTTP calls omit projectKey.",
       "placeholder": "gamexpert"
     },
+    "projects": {
+      "label": "Project Policies",
+      "help": "Optional per-project policy map for environment/channel isolation, gray rollout defaults, region or audience dimensions, scheduled builds, and smoke workflows."
+    },
     "defaultEnvironment": {
       "label": "Default Environment",
       "help": "Default environment used for release creation and CI callbacks.",
@@ -113,6 +117,21 @@
       "label": "Upload Base URL",
       "help": "Optional base URL prefixed onto uploaded artifact relative paths."
     },
+    "artifactRetentionDays": {
+      "label": "Artifact Retention Days",
+      "help": "Retention window for cleaning non-protected artifact files and manifests.",
+      "placeholder": "21"
+    },
+    "auditRetentionDays": {
+      "label": "Audit Retention Days",
+      "help": "Retention window for old event, idempotency, and delivered notification records.",
+      "placeholder": "30"
+    },
+    "maintenanceKeepStableCount": {
+      "label": "Keep Stable Releases",
+      "help": "Minimum number of latest stable releases preserved per channel during maintenance.",
+      "placeholder": "10"
+    },
     "autoPublishDev": {
       "label": "Auto Publish Dev",
       "help": "Automatically publish successful dev builds.",
@@ -124,6 +143,7 @@
     "additionalProperties": false,
     "properties": {
       "defaultProjectKey": { "type": "string" },
+      "projects": { "type": "object" },
       "defaultEnvironment": { "type": "string" },
       "defaultChannel": { "type": "string" },
       "routePrefix": { "type": "string" },
@@ -147,6 +167,9 @@
       "jenkinsAndroidKeystorePasswordCredentialsId": { "type": "string" },
       "uploadDestinationDir": { "type": "string" },
       "uploadBaseUrl": { "type": "string" },
+      "artifactRetentionDays": { "type": "integer", "minimum": 1 },
+      "auditRetentionDays": { "type": "integer", "minimum": 1 },
+      "maintenanceKeepStableCount": { "type": "integer", "minimum": 1 },
       "autoPublishDev": { "type": "boolean" }
     }
   }

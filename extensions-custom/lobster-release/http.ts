@@ -466,7 +466,12 @@ export function createLobsterReleaseHttpHandler(params: {
       }
 
       if (req.method === "GET") {
-        let match = matchPath(
+        let match = matchPath(/^\/projects$/, pathname);
+        if (match) {
+          sendJson(res, 200, ok(runtime.getProjectCatalog()));
+          return true;
+        }
+        match = matchPath(
           /^\/manifests\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)\/release_manifest\.json$/,
           pathname,
         );
@@ -540,6 +545,23 @@ export function createLobsterReleaseHttpHandler(params: {
               ...runtime.getBuildStatus(match[2]),
               jenkinsStatus: refreshJenkins ? await runtime.pollJenkinsBuildStatus(match[2]) : null,
             }),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/store\/status$/, pathname);
+        if (match) {
+          sendJson(res, 200, ok(runtime.getStoreStatus(match[1])));
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/policy$/, pathname);
+        if (match) {
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.getProjectCatalog().projects.find((item) => item.projectKey === match[1]) ??
+                null,
+            ),
           );
           return true;
         }
@@ -635,6 +657,24 @@ export function createLobsterReleaseHttpHandler(params: {
                 projectKey: match[1],
                 environment,
                 channel: match[2] as ReleaseChannel,
+              }),
+            ),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/gray-plan$/, pathname);
+        if (match) {
+          const environment = url.searchParams.get("environment") as ReleaseEnvironment | null;
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.getGrayReleasePlan({
+                projectKey: match[1],
+                environment: environment ?? undefined,
+                channel: match[2] as ReleaseChannel,
+                region: url.searchParams.get("region") ?? undefined,
+                audience: url.searchParams.get("audience") ?? undefined,
               }),
             ),
           );
@@ -792,6 +832,19 @@ export function createLobsterReleaseHttpHandler(params: {
             version: readString(body.version),
             git: body.git as CreateReleaseInput["git"],
             targets: normalizeBuildTargets(body.targets),
+            scope:
+              body.scope && typeof body.scope === "object"
+                ? {
+                    region:
+                      typeof (body.scope as Record<string, unknown>).region === "string"
+                        ? ((body.scope as Record<string, unknown>).region as string)
+                        : undefined,
+                    audience:
+                      typeof (body.scope as Record<string, unknown>).audience === "string"
+                        ? ((body.scope as Record<string, unknown>).audience as string)
+                        : undefined,
+                  }
+                : undefined,
             notes: typeof body.notes === "string" ? body.notes : undefined,
             versionSource:
               typeof body.versionSource === "string"
@@ -865,6 +918,27 @@ export function createLobsterReleaseHttpHandler(params: {
                   (body.targetChannel as ReleaseChannel | undefined) ?? config.defaultChannel,
                 notes: typeof body.notes === "string" ? body.notes : undefined,
                 operator: typeof body.operator === "string" ? body.operator : "api",
+              }),
+            ),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/maintenance\/run$/, pathname);
+        if (match) {
+          const body = await readJsonObjectBody(req, res, {
+            maxBytes: 128 * 1024,
+            timeoutMs: 10_000,
+          });
+          if (!body) {
+            return true;
+          }
+          sendJson(
+            res,
+            200,
+            ok(
+              await runtime.runMaintenance({
+                projectKey: match[1],
+                dryRun: body.dryRun !== false,
               }),
             ),
           );

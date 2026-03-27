@@ -360,6 +360,10 @@ export type CreateReleaseInput = {
   environment: ReleaseEnvironment;
   channel: ReleaseChannel;
   version: string;
+  scope?: {
+    region?: string;
+    audience?: string;
+  };
   versionSource?: ReleaseVersionSource;
   git?: {
     url?: string;
@@ -404,6 +408,10 @@ export type CiAppInfo = {
   resourceVersion?: string;
   platform?: string;
   channel?: string;
+  environment?: string;
+  projectKey?: string;
+  region?: string;
+  audience?: string;
 };
 
 export type CiBaselineInfo = {
@@ -412,6 +420,21 @@ export type CiBaselineInfo = {
   baselineManifestUrl?: string;
   baselinePackageUrl?: string;
   baselineSha256?: string;
+};
+
+export type CiBuildEnvironmentInfo = {
+  godotVersion?: string;
+  godotBin?: string;
+  dotnetVersion?: string;
+  exportPresets?: string[];
+  workspaceRevision?: string;
+  configFingerprint?: string;
+  assetGroupsFingerprint?: string;
+  scriptsFingerprint?: string;
+  configVersion?: string;
+  scriptVersions?: Record<string, string>;
+  envSnapshot?: Record<string, unknown>;
+  parameters?: Record<string, unknown>;
 };
 
 export type CiBuildRequest = {
@@ -424,6 +447,7 @@ export type CiBuildRequest = {
   git?: CiGitInfo;
   app?: CiAppInfo;
   baseline?: CiBaselineInfo;
+  environmentInfo?: CiBuildEnvironmentInfo;
 };
 
 export type CiPublishArtifact = {

@@ -95,11 +95,31 @@ describe("lobster-release runtime", () => {
         {
           artifactType: "android_apk",
           platform: "android",
-          fileName: "GameXpert-android-apk-1.2.3.apk",
+          fileName: "GameXpert-android-apk-1.2.3-42.apk",
           fileSizeBytes: 100,
           sha256: "abc",
           storageProvider: "s3",
-          storagePath: "gamexpert/staging/beta/1.2.3/android/GameXpert-android-apk-1.2.3.apk",
+          storagePath: "gamexpert/staging/beta/1.2.3/android/GameXpert-android-apk-1.2.3-42.apk",
+        },
+        {
+          artifactType: "patch_manifest",
+          manifestRole: "patch_manifest",
+          platform: "android",
+          fileName: "manifest.json",
+          fileSizeBytes: 50,
+          sha256: "def",
+          storageProvider: "s3",
+          storagePath: "gamexpert/staging/beta/1.2.3/patch/manifest.json",
+        },
+        {
+          artifactType: "patch_bundle",
+          platform: "android",
+          fileName: "GameXpert-patch-bundle-1.2.3-42-8de107b.zip",
+          fileSizeBytes: 75,
+          sha256: "ghi",
+          storageProvider: "s3",
+          storagePath:
+            "gamexpert/staging/beta/1.2.3/patch/GameXpert-patch-bundle-1.2.3-42-8de107b.zip",
         },
       ],
     });
@@ -158,7 +178,7 @@ describe("lobster-release runtime", () => {
       freezeCurrentRelease: true,
       operator: "ops",
     });
-    const completed = runtime.approveRollback(rollback.rollbackId, "ops");
+    const completed = await runtime.approveRollback(rollback.rollbackId, "ops");
     expect(completed.status).toBe("completed");
 
     const channelState = runtime.getChannelState("gamexpert", "staging", "beta");
@@ -232,6 +252,15 @@ describe("lobster-release runtime", () => {
         channel: "default",
       },
       artifacts: [
+        {
+          target: "android_apk",
+          name: "GameXpert-android-apk-0.0.1-28-0123456.apk",
+          relativePath: "android/GameXpert-android-apk-0.0.1-28-0123456.apk",
+          downloadUrl:
+            "https://cdn.example.com/gamexpert/android/GameXpert-android-apk-0.0.1-28-0123456.apk",
+          sha256: "apk",
+          sizeBytes: 789,
+        },
         {
           target: "patch",
           name: "manifest.json",
@@ -712,5 +741,235 @@ describe("lobster-release runtime", () => {
     expect(provenance?.baselineManifestUrl).toContain("/1.2.14/release_manifest.json");
     expect(provenance?.jenkinsBuildNumber).toBe(41);
     expect(provenance?.sourceGitCommit).toBe("7617252d714c33908c39b438d4c69b62a70f4223");
+  });
+
+  it("supports per-project policy isolation and gray rollout planning", async () => {
+    const runtime = await createRuntimeWithConfig({
+      defaultProjectKey: "gamexpert",
+      projects: {
+        projectb: {
+          name: "Project B",
+          environments: ["staging", "production"],
+          channels: ["beta", "release"],
+          defaultEnvironment: "production",
+          defaultChannel: "release",
+          regions: ["cn", "us"],
+          audiences: ["internal", "external"],
+          grayRelease: {
+            enabled: true,
+            rolloutPercentages: [10, 50, 100],
+            stickiness: "account",
+          },
+          smokeWorkflows: ["install-smoke", "boot-smoke"],
+        },
+      },
+    });
+
+    const created = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "2.0.0",
+      scope: {
+        region: "cn",
+        audience: "internal",
+      },
+      targets: {
+        androidApk: false,
+        androidAab: true,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: false,
+      createdBy: "tester",
+    });
+
+    expect(created.release.projectKey).toBe("projectb");
+    const createdScope = created.release.metadata?.scope as Record<string, unknown> | undefined;
+    expect(createdScope?.region).toBe("cn");
+
+    const catalog = runtime.getProjectCatalog();
+    expect(catalog.projects.find((item) => item.projectKey === "projectb")?.defaultChannel).toBe(
+      "release",
+    );
+
+    const grayPlan = runtime.getGrayReleasePlan({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      region: "cn",
+      audience: "internal",
+    });
+    expect(grayPlan.grayRelease.enabled).toBe(true);
+    expect(grayPlan.grayRelease.rolloutPercentages).toEqual([10, 50, 100]);
+    expect(grayPlan.smokeWorkflows).toEqual(["install-smoke", "boot-smoke"]);
+
+    await expect(
+      runtime.createRelease({
+        projectKey: "projectb",
+        environment: "production",
+        channel: "release",
+        version: "2.0.1",
+        scope: {
+          region: "eu",
+        },
+        targets: {
+          androidApk: false,
+          androidAab: true,
+          macosApp: false,
+          patch: false,
+        },
+        triggerBuild: false,
+        createdBy: "tester",
+      }),
+    ).rejects.toThrow("project region is not allowed");
+  });
+
+  it("blocks approve-release while a rollback is still requested", async () => {
+    const runtime = await createRuntime();
+
+    const stableOne = await runtime.createRelease({
+      projectKey: "gamexpert",
+      environment: "staging",
+      channel: "beta",
+      version: "1.0.1",
+      targets: {
+        androidApk: false,
+        androidAab: false,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: false,
+      createdBy: "tester",
+    });
+    await runtime.approveRelease(stableOne.release.releaseId, "approver");
+
+    const stableTwo = await runtime.createRelease({
+      projectKey: "gamexpert",
+      environment: "staging",
+      channel: "beta",
+      version: "1.0.2",
+      targets: {
+        androidApk: false,
+        androidAab: false,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: false,
+      createdBy: "tester",
+    });
+    await runtime.approveRelease(stableTwo.release.releaseId, "approver");
+
+    await runtime.createRollback({
+      projectKey: "gamexpert",
+      environment: "staging",
+      channel: "beta",
+      targetReleaseId: stableOne.release.releaseId,
+      reason: "incident",
+      strategy: "pointer_switch",
+      freezeCurrentRelease: true,
+      operator: "ops",
+    });
+
+    await expect(runtime.approveRelease(stableTwo.release.releaseId, "approver")).rejects.toThrow(
+      "rollback.in_progress",
+    );
+  });
+
+  it("preserves immutable artifacts and blocks incompatible rollback targets", async () => {
+    const runtime = await createRuntime();
+    const created = await runtime.createRelease({
+      projectKey: "gamexpert",
+      environment: "staging",
+      channel: "beta",
+      version: "1.2.3",
+      targets: {
+        androidApk: true,
+        androidAab: false,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: true,
+      createdBy: "tester",
+    });
+
+    runtime.recordBuildStart(created.build!.buildId, {
+      jenkinsBuildNumber: 42,
+      jenkinsJob: "GameXpert_Godot_CI",
+    });
+
+    await runtime.recordBuildPublish(created.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_apk",
+          platform: "android",
+          fileName: "GameXpert-android-apk-1.2.3-42.apk",
+          fileSizeBytes: 100,
+          sha256: "abc",
+          storageProvider: "s3",
+          storagePath: "releases/1.2.3-42/GameXpert-android-apk-1.2.3-42.apk",
+        },
+        {
+          artifactType: "android_apk",
+          platform: "android",
+          fileName: "GameXpert-android-apk-1.2.3-42.apk",
+          fileSizeBytes: 100,
+          sha256: "abc",
+          storageProvider: "s3",
+          storagePath: "releases/1.2.3-42/GameXpert-android-apk-1.2.3-42.apk",
+        },
+      ],
+    });
+
+    const artifacts = runtime.getBuildStatus(created.build!.buildId).artifacts;
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]?.immutable).toBe(true);
+    await runtime.recordBuildFinish(created.build!.buildId, { status: "success" });
+    await runtime.approveRelease(created.release.releaseId, "approver");
+
+    const major = await runtime.createRelease({
+      projectKey: "gamexpert",
+      environment: "staging",
+      channel: "beta",
+      version: "2.0.0",
+      targets: {
+        androidApk: false,
+        androidAab: false,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: false,
+      createdBy: "tester",
+    });
+    await runtime.approveRelease(major.release.releaseId, "approver");
+
+    const patch = await runtime.createRelease({
+      projectKey: "gamexpert",
+      environment: "staging",
+      channel: "beta",
+      version: "2.0.1",
+      targets: {
+        androidApk: false,
+        androidAab: false,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: false,
+      createdBy: "tester",
+    });
+    await runtime.approveRelease(patch.release.releaseId, "approver");
+
+    await expect(
+      runtime.createRollback({
+        projectKey: "gamexpert",
+        environment: "staging",
+        channel: "beta",
+        targetReleaseId: created.release.releaseId,
+        reason: "bad rollback",
+        strategy: "pointer_switch",
+        freezeCurrentRelease: true,
+        operator: "ops",
+      }),
+    ).rejects.toThrow("rollback.compatibility_conflict");
   });
 });

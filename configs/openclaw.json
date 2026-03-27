@@ -76,7 +76,11 @@
             "release_notifications_render",
             "release_notifications_ack",
             "release_notifications_fail",
-            "release_notifications_requeue"
+            "release_notifications_requeue",
+            "release_project_catalog",
+            "release_gray_plan",
+            "release_store_status",
+            "release_maintenance_run"
           ],
           "deny": []
         }
@@ -216,7 +220,11 @@
       "release_notifications_render",
       "release_notifications_ack",
       "release_notifications_fail",
-      "release_notifications_requeue"
+      "release_notifications_requeue",
+      "release_project_catalog",
+      "release_gray_plan",
+      "release_store_status",
+      "release_maintenance_run"
     ],
     "sessions": {
       "visibility": "all"

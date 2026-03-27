@@ -6,6 +6,7 @@ Current state:
 
 - `docs/` stores the product and technical design notes.
 - Runtime code exists for release creation, Jenkins trigger, CI callback intake, manifest generation, approval, and rollback.
+- Runtime also supports release maintenance, retention cleanup, and store status inspection.
 - OpenClaw local config can load the plugin from `configs/openclaw.json`.
 
 Current integration contract:
@@ -13,6 +14,7 @@ Current integration contract:
 - `lobster-release` actively triggers Jenkins `buildWithParameters`.
 - Jenkins calls back to `lobster-release` through `/api/ci/v1/builds/resolve-baseline|start|publish|finish`.
 - Jenkins CI auth uses `X-Lobster-*` HMAC headers.
+- Jenkins callbacks may optionally include `environmentInfo` metadata to archive Godot/export/config/script fingerprints into build provenance.
 
 Before real end-to-end testing, fill these `configs/openclaw.json` values:
 

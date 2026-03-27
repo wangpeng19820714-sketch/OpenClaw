@@ -59,36 +59,36 @@
 
 ## 5. 核心数据模型
 
-- [ ] 定义 `project` 数据模型
-- [ ] 定义 `release` 数据模型
-- [ ] 定义 `build` 数据模型
-- [ ] 定义 `artifact` 数据模型
-- [ ] 定义 `patch_baseline` 数据模型
-- [ ] 定义 `release_channel_state` 数据模型
-- [ ] 定义 `event_log` 数据模型
-- [ ] 定义 build provenance 数据模型或字段集
-- [ ] 定义 release graph 关系字段
-- [ ] 定义 `rollback_operation` 数据模型
-- [ ] 定义环境维度字段，如 `environment / region / audience`
-- [ ] 定义 `operation_lock` 数据模型
-- [ ] 设计各表主键、唯一键和索引
-- [ ] 设计 release 和 build 的幂等键规则
-- [ ] 设计审计事件保留策略
+- [x] 定义 `project` 数据模型
+- [x] 定义 `release` 数据模型
+- [x] 定义 `build` 数据模型
+- [x] 定义 `artifact` 数据模型
+- [x] 定义 `patch_baseline` 数据模型
+- [x] 定义 `release_channel_state` 数据模型
+- [x] 定义 `event_log` 数据模型
+- [x] 定义 build provenance 数据模型或字段集
+- [x] 定义 release graph 关系字段
+- [x] 定义 `rollback_operation` 数据模型
+- [x] 定义环境维度字段，如 `environment / region / audience`
+- [x] 定义 `operation_lock` 数据模型
+- [x] 设计各表主键、唯一键和索引
+- [x] 设计 release 和 build 的幂等键规则
+- [x] 设计审计事件保留策略
 
 ## 6. 状态机与领域规则
 
-- [ ] 固化 `draft -> building -> built -> awaiting_approval -> published` 状态流
-- [ ] 定义 `failed` 状态进入规则
-- [ ] 定义 `rolled_back` 状态进入规则
-- [ ] 实现 release 状态迁移校验
-- [ ] 实现 build 状态迁移校验
-- [ ] 实现渠道指针更新规则
-- [ ] 实现 rollback 时的前版本恢复规则
-- [ ] 实现人工审批与自动发布的互斥规则
-- [ ] 实现稳定版本标记规则
-- [ ] 实现事故版本冻结规则
-- [ ] 实现 channel 级串行锁规则
-- [ ] 实现 rollback 优先级高于普通发布的规则
+- [x] 固化 `draft -> building -> built -> awaiting_approval -> published` 状态流
+- [x] 定义 `failed` 状态进入规则
+- [x] 定义 `rolled_back` 状态进入规则
+- [x] 实现 release 状态迁移校验
+- [x] 实现 build 状态迁移校验
+- [x] 实现渠道指针更新规则
+- [x] 实现 rollback 时的前版本恢复规则
+- [x] 实现人工审批与自动发布的互斥规则
+- [x] 实现稳定版本标记规则
+- [x] 实现事故版本冻结规则
+- [x] 实现 channel 级串行锁规则
+- [x] 实现 rollback 优先级高于普通发布的规则
 
 ## 7. API 设计
 
@@ -132,8 +132,8 @@
 - [x] 统一传递构建目标参数
 - [x] 统一传递 baseline 参数
 - [x] 统一传递 callback 鉴权参数
-- [ ] 归档 Jenkins 侧构建环境快照
-- [ ] 归档 Godot 版本、export preset、脚本版本和配置版本
+- [x] 归档 Jenkins 侧构建环境快照
+- [x] 归档 Godot 版本、export preset、脚本版本和配置版本
 - [x] 支持 Jenkins queue id / build number 回写
 - [x] 支持主动轮询 Jenkins 状态
 - [x] 支持 Jenkins 失败后的重试或人工重触发
@@ -141,8 +141,8 @@
 ## 9. 产物与 Manifest
 
 - [x] 定义统一 artifact 结构
-- [ ] 定义 `release_manifest.json` schema
-- [ ] 定义 `manifestVersion` 和兼容性字段
+- [x] 定义 `release_manifest.json` schema
+- [x] 定义 `manifestVersion` 和兼容性字段
 - [x] 定义 artifact type 枚举
 - [x] 实现 `uploaded_artifacts.json` 到内部 artifact 结构的映射
 - [x] 实现统一下载 URL 生成规则
@@ -152,11 +152,11 @@
 - [x] 实现 artifact 不可变规则
 - [x] 实现 release 级 manifest 生成
 - [x] 实现 patch 产物与 baseline 的关联记录
-- [ ] 实现产物保留与清理策略
+- [x] 实现产物保留与清理策略
 
 ## 10. 存储与持久化
 
-- [ ] 初始化数据库迁移方案
+- [x] 初始化数据库迁移方案
 - [x] 实现 repository/store 层
 - [x] 实现 release 持久化
 - [x] 实现 build 持久化
@@ -164,7 +164,7 @@
 - [x] 实现 baseline 持久化
 - [x] 实现 event log 持久化
 - [x] 实现渠道状态持久化
-- [ ] 设计定期清理策略
+- [x] 设计定期清理策略
 
 ## 11. 安全与可靠性
 
@@ -214,14 +214,14 @@
 
 ## 14. 长期运营能力
 
-- [ ] 支持多项目配置隔离
-- [ ] 支持多环境管理，如 `test / staging / production`
-- [ ] 支持 region 或 audience 维度扩展
-- [ ] 设计灰度发布能力
+- [x] 支持多项目配置隔离
+- [x] 支持多环境管理，如 `test / staging / production`
+- [x] 支持 region 或 audience 维度扩展
+- [x] 设计灰度发布能力
 - [ ] 设计渠道分流能力
 - [ ] 设计版本与运营数据联动入口
-- [ ] 设计定时构建或夜间构建能力
-- [ ] 设计自动验证或自动 smoke 流程
+- [x] 设计定时构建或夜间构建能力
+- [x] 设计自动验证或自动 smoke 流程
 
 ## 15. 服务骨架与代码结构
 
@@ -233,7 +233,7 @@
 - [x] 创建 `package.json`
 - [x] 创建 `openclaw.plugin.json` 或服务配置文件
 - [x] 创建环境变量示例文件
-- [ ] 创建本地开发启动脚本
+- [x] 创建本地开发启动脚本
 
 ## 16. 测试
 
@@ -243,15 +243,15 @@
 - [x] 为 baseline 选择逻辑编写测试
 - [x] 为 manifest 生成逻辑编写测试
 - [x] 为 Jenkins 参数映射编写测试
-- [ ] 为回调鉴权编写测试
+- [x] 为回调鉴权编写测试
 - [x] 为幂等逻辑编写测试
 - [x] 为 rollback 流程编写测试
-- [ ] 为 release graph 查询编写测试
+- [x] 为 release graph 查询编写测试
 - [x] 为 patch 冲突检测编写测试
-- [ ] 为 operation lock 编写测试
-- [ ] 为 artifact 不可变规则编写测试
-- [ ] 为客户端兼容性校验编写测试
-- [ ] 增加 API 集成测试
+- [x] 为 operation lock 编写测试
+- [x] 为 artifact 不可变规则编写测试
+- [x] 为客户端兼容性校验编写测试
+- [x] 增加 API 集成测试
 
 ## 17. 联调与验收
 
@@ -270,7 +270,7 @@
 - [x] 验证 macOS app 真实发布路径正确
 - [x] 验证 patch baseline 解析正确
 - [x] 验证 patch 冲突检测正确
-- [ ] 验证稳定版本标记与冻结规则正确
+- [x] 验证稳定版本标记与冻结规则正确
 - [x] 验证重复回调幂等处理正确
 
 ## 18. 文档
