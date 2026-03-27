@@ -26,11 +26,15 @@ import type {
   ReleaseRecord,
   ReleaseRelationRecord,
   RolloutRecord,
+  RolloutObservationRecord,
+  RolloutHealthStatus,
   RollbackInput,
   RollbackOperationRecord,
   CreateRolloutInput,
   AdvanceRolloutInput,
   CancelRolloutInput,
+  RecordRolloutObservationInput,
+  EvaluateRolloutInput,
   TriggerReleaseInput,
 } from "./types.js";
 import { compareVersions, inferBumpType, parseVersion, toCommitShort } from "./versioning.js";
@@ -61,7 +65,8 @@ const NOTIFICATION_SENDING_TIMEOUT_MS = 5 * 60_000;
 const NOTIFICATION_RETRY_BASE_MS = 60_000;
 const NOTIFICATION_MAX_ATTEMPTS = 5;
 const TERMINAL_BUILD_STATUSES = new Set<BuildRecord["status"]>(["finished", "failed", "canceled"]);
-const ACTIVE_ROLLOUT_STATUSES = new Set<RolloutRecord["status"]>(["draft", "active", "paused"]);
+const MANAGED_ROLLOUT_STATUSES = new Set<RolloutRecord["status"]>(["draft", "active", "paused"]);
+const ROUTABLE_ROLLOUT_STATUSES = new Set<RolloutRecord["status"]>(["active"]);
 const PATCH_CONFLICT_PATH_SEPARATOR = "/";
 const CALLBACK_NONCE_TTL_MS = 10 * 60_000;
 
@@ -356,10 +361,10 @@ export class LobsterReleaseRuntime {
         projectKey,
         environment,
         channel,
-        statuses: [...ACTIVE_ROLLOUT_STATUSES],
+        statuses: [...MANAGED_ROLLOUT_STATUSES],
         limit: 100,
       })
-      .filter((rollout) => ACTIVE_ROLLOUT_STATUSES.has(rollout.status));
+      .filter((rollout) => MANAGED_ROLLOUT_STATUSES.has(rollout.status));
   }
 
   private assertNoConflictingRollout(params: {
@@ -420,6 +425,194 @@ export class LobsterReleaseRuntime {
     return typeof configured === "number" && configured > 0 && configured <= 100 ? configured : 5;
   }
 
+  private nextRolloutTrafficPercent(
+    projectKey: string,
+    currentPercent: number,
+  ): number | undefined {
+    const configured = this.getProjectPolicy(projectKey)
+      .grayRelease.rolloutPercentages.filter(
+        (item) => typeof item === "number" && item > currentPercent && item <= 100,
+      )
+      .toSorted((left, right) => left - right);
+    return configured[0];
+  }
+
+  private minutesBetween(startedAt: string | undefined, endedAt: string): number {
+    if (!startedAt) {
+      return Number.POSITIVE_INFINITY;
+    }
+    const start = Date.parse(startedAt);
+    const end = Date.parse(endedAt);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return Math.max(0, Math.floor((end - start) / 60_000));
+  }
+
+  private rolloutMonitoringPolicy(projectKey: string) {
+    return this.getProjectPolicy(projectKey).grayRelease.monitoring;
+  }
+
+  private listRolloutObservationEvents(rollout: RolloutRecord): EventLogRecord[] {
+    return this.store.listEvents({
+      projectKey: rollout.projectKey,
+      objectType: "rollout",
+      objectId: rollout.rolloutId,
+      eventType: "rollout.observed",
+      limit: 100,
+    });
+  }
+
+  private parseRolloutObservation(event: EventLogRecord): RolloutObservationRecord | null {
+    const payload = asRecord(event.payload);
+    if (!payload) {
+      return null;
+    }
+    const sampleSize =
+      typeof payload.sampleSize === "number" && Number.isFinite(payload.sampleSize)
+        ? Math.max(0, Math.trunc(payload.sampleSize))
+        : 0;
+    const successCount =
+      typeof payload.successCount === "number" && Number.isFinite(payload.successCount)
+        ? Math.max(0, Math.trunc(payload.successCount))
+        : 0;
+    const errorCount =
+      typeof payload.errorCount === "number" && Number.isFinite(payload.errorCount)
+        ? Math.max(0, Math.trunc(payload.errorCount))
+        : 0;
+    const crashCount =
+      typeof payload.crashCount === "number" && Number.isFinite(payload.crashCount)
+        ? Math.max(0, Math.trunc(payload.crashCount))
+        : 0;
+    const normalizedSample =
+      sampleSize > 0 ? sampleSize : Math.max(successCount + errorCount + crashCount, 0);
+    return {
+      observedAt:
+        typeof payload.observedAt === "string" && payload.observedAt
+          ? payload.observedAt
+          : event.createdAt,
+      source: typeof payload.source === "string" ? payload.source : undefined,
+      notes: typeof payload.notes === "string" ? payload.notes : undefined,
+      sampleSize: normalizedSample,
+      successCount,
+      errorCount,
+      crashCount,
+      latencyP95Ms:
+        typeof payload.latencyP95Ms === "number" && Number.isFinite(payload.latencyP95Ms)
+          ? payload.latencyP95Ms
+          : undefined,
+    };
+  }
+
+  private buildRolloutHealthStatus(
+    rollout: RolloutRecord,
+    options?: { publishRelease?: boolean },
+  ): RolloutHealthStatus {
+    const thresholds = this.rolloutMonitoringPolicy(rollout.projectKey);
+    const observations = this.listRolloutObservationEvents(rollout)
+      .map((event) => this.parseRolloutObservation(event))
+      .filter((item): item is RolloutObservationRecord => Boolean(item))
+      .toSorted((left, right) => left.observedAt.localeCompare(right.observedAt));
+    const aggregate = observations.reduce(
+      (summary, observation) => {
+        summary.sampleSize += observation.sampleSize;
+        summary.successCount += observation.successCount;
+        summary.errorCount += observation.errorCount;
+        summary.crashCount += observation.crashCount;
+        summary.latestObservedAt = observation.observedAt;
+        if (typeof observation.latencyP95Ms === "number") {
+          summary.latencyP95Ms = Math.max(summary.latencyP95Ms ?? 0, observation.latencyP95Ms);
+        }
+        return summary;
+      },
+      {
+        sampleSize: 0,
+        successCount: 0,
+        errorCount: 0,
+        crashCount: 0,
+        latestObservedAt: undefined as string | undefined,
+        latencyP95Ms: undefined as number | undefined,
+      },
+    );
+    const sampleDenominator = Math.max(aggregate.sampleSize, 1);
+    const successRate = aggregate.successCount / sampleDenominator;
+    const errorRate = aggregate.errorCount / sampleDenominator;
+    const crashRate = aggregate.crashCount / sampleDenominator;
+    const nextTrafficPercent =
+      rollout.status === "completed" || rollout.status === "canceled"
+        ? undefined
+        : this.nextRolloutTrafficPercent(rollout.projectKey, rollout.trafficPercent);
+    let health: RolloutHealthStatus["health"] = "disabled";
+    let autoAction: RolloutHealthStatus["autoAction"];
+    if (thresholds.enabled) {
+      if (aggregate.sampleSize < thresholds.minSampleSize) {
+        health = "insufficient_data";
+      } else if (
+        successRate < thresholds.minSuccessRate ||
+        errorRate > thresholds.maxErrorRate ||
+        crashRate > thresholds.maxCrashRate
+      ) {
+        health = "unhealthy";
+        autoAction = {
+          type: thresholds.circuitBreakerAction,
+          reason: `rollout health fell below threshold (success=${successRate.toFixed(3)}, error=${errorRate.toFixed(3)}, crash=${crashRate.toFixed(3)})`,
+        };
+      } else {
+        health = "healthy";
+        const observedAt = aggregate.latestObservedAt ?? rollout.updatedAt;
+        const elapsedMinutes = this.minutesBetween(observedAt, nowIso());
+        if (
+          thresholds.autoAdvance &&
+          rollout.status === "active" &&
+          elapsedMinutes >= thresholds.autoAdvanceAfterMinutes
+        ) {
+          if (nextTrafficPercent && nextTrafficPercent < 100) {
+            autoAction = {
+              type: "advance",
+              trafficPercent: nextTrafficPercent,
+              reason: `healthy rollout reached auto-advance window (${elapsedMinutes}m >= ${thresholds.autoAdvanceAfterMinutes}m)`,
+            };
+          } else {
+            autoAction = {
+              type: "complete",
+              trafficPercent: 100,
+              reason: `healthy rollout completed final step (${options?.publishRelease !== false && thresholds.publishOnComplete ? "publishing release" : "manual publish pending"})`,
+            };
+          }
+        }
+      }
+    }
+    return {
+      rolloutId: rollout.rolloutId,
+      health,
+      thresholds: {
+        enabled: thresholds.enabled,
+        minSampleSize: thresholds.minSampleSize,
+        minSuccessRate: thresholds.minSuccessRate,
+        maxErrorRate: thresholds.maxErrorRate,
+        maxCrashRate: thresholds.maxCrashRate,
+        autoAdvance: thresholds.autoAdvance,
+        autoAdvanceAfterMinutes: thresholds.autoAdvanceAfterMinutes,
+        publishOnComplete: thresholds.publishOnComplete,
+        circuitBreakerAction: thresholds.circuitBreakerAction,
+      },
+      aggregate: {
+        sampleSize: aggregate.sampleSize,
+        successCount: aggregate.successCount,
+        errorCount: aggregate.errorCount,
+        crashCount: aggregate.crashCount,
+        successRate,
+        errorRate,
+        crashRate,
+        latestObservedAt: aggregate.latestObservedAt,
+        latencyP95Ms: aggregate.latencyP95Ms,
+      },
+      observations,
+      nextTrafficPercent,
+      autoAction,
+    };
+  }
+
   private rolloutBucket(subjectKey: string): number {
     const digest = sha256Text(subjectKey);
     return Number.parseInt(digest.slice(0, 8), 16) % 100;
@@ -439,6 +632,7 @@ export class LobsterReleaseRuntime {
     const region = this.normalizeOptionalScopeValue(params.region);
     const audience = this.normalizeOptionalScopeValue(params.audience);
     return this.activeRolloutsForChannel(params.projectKey, params.environment, params.channel)
+      .filter((rollout) => ROUTABLE_ROLLOUT_STATUSES.has(rollout.status))
       .filter((rollout) => {
         const rolloutRegion = this.normalizeOptionalScopeValue(rollout.scope.region);
         const rolloutAudience = this.normalizeOptionalScopeValue(rollout.scope.audience);
@@ -4152,6 +4346,9 @@ export class LobsterReleaseRuntime {
       metadata: {
         rolloutPercentages: policy.grayRelease.rolloutPercentages,
         smokeWorkflows: policy.smokeWorkflows,
+        monitoring: {
+          configured: policy.grayRelease.monitoring,
+        },
       },
     };
     this.store.upsertRollout(rollout);
@@ -4279,6 +4476,207 @@ export class LobsterReleaseRuntime {
       createdBy: input.operator ?? "system",
     });
     return next;
+  }
+
+  getRolloutStatus(params: { projectKey: string; rolloutId: string; publishRelease?: boolean }): {
+    rollout: RolloutRecord;
+    release: ReleaseRecord | null;
+    routeEligible: boolean;
+    status: RolloutHealthStatus;
+  } {
+    const rollout = this.store.getRollout(params.rolloutId);
+    if (!rollout || rollout.projectKey !== params.projectKey) {
+      throw new Error(`rollout not found: ${params.rolloutId}`);
+    }
+    return {
+      rollout,
+      release: this.store.getRelease(rollout.releaseId),
+      routeEligible: ROUTABLE_ROLLOUT_STATUSES.has(rollout.status),
+      status: this.buildRolloutHealthStatus(rollout, {
+        publishRelease: params.publishRelease,
+      }),
+    };
+  }
+
+  recordRolloutObservation(input: RecordRolloutObservationInput): {
+    rollout: RolloutRecord;
+    observation: RolloutObservationRecord;
+    status: RolloutHealthStatus;
+  } {
+    const rollout = this.store.getRollout(input.rolloutId);
+    if (!rollout || rollout.projectKey !== input.projectKey) {
+      throw new Error(`rollout not found: ${input.rolloutId}`);
+    }
+    if (rollout.status === "canceled" || rollout.status === "completed") {
+      throw new Error(`rollout is terminal: ${rollout.rolloutId}`);
+    }
+    const successCount =
+      typeof input.successCount === "number" && Number.isFinite(input.successCount)
+        ? Math.max(0, Math.trunc(input.successCount))
+        : 0;
+    const errorCount =
+      typeof input.errorCount === "number" && Number.isFinite(input.errorCount)
+        ? Math.max(0, Math.trunc(input.errorCount))
+        : 0;
+    const crashCount =
+      typeof input.crashCount === "number" && Number.isFinite(input.crashCount)
+        ? Math.max(0, Math.trunc(input.crashCount))
+        : 0;
+    const sampleSize =
+      typeof input.sampleSize === "number" && Number.isFinite(input.sampleSize)
+        ? Math.max(0, Math.trunc(input.sampleSize))
+        : successCount + errorCount + crashCount;
+    if (sampleSize <= 0) {
+      throw new Error("rollout observation requires a positive sampleSize or counts");
+    }
+    if (successCount + errorCount + crashCount > sampleSize) {
+      throw new Error("rollout observation counts exceed sampleSize");
+    }
+    const observation: RolloutObservationRecord = {
+      observedAt:
+        typeof input.observedAt === "string" && input.observedAt ? input.observedAt : nowIso(),
+      source: input.source,
+      notes: input.notes,
+      sampleSize,
+      successCount,
+      errorCount,
+      crashCount,
+      latencyP95Ms:
+        typeof input.latencyP95Ms === "number" && Number.isFinite(input.latencyP95Ms)
+          ? input.latencyP95Ms
+          : undefined,
+    };
+    this.recordEvent({
+      projectId: rollout.projectId,
+      projectKey: rollout.projectKey,
+      environment: rollout.environment,
+      objectType: "rollout",
+      objectId: rollout.rolloutId,
+      eventType: "rollout.observed",
+      payload: {
+        observedAt: observation.observedAt,
+        source: observation.source,
+        notes: observation.notes,
+        sampleSize: observation.sampleSize,
+        successCount: observation.successCount,
+        errorCount: observation.errorCount,
+        crashCount: observation.crashCount,
+        latencyP95Ms: observation.latencyP95Ms,
+      },
+      createdBy: input.operator ?? "system",
+    });
+    const now = nowIso();
+    this.store.upsertRollout({
+      ...rollout,
+      updatedAt: now,
+      metadata: {
+        ...asRecord(rollout.metadata),
+        monitoring: {
+          latestObservationAt: observation.observedAt,
+          latestSource: observation.source,
+          latestSampleSize: observation.sampleSize,
+          latestSuccessCount: observation.successCount,
+          latestErrorCount: observation.errorCount,
+          latestCrashCount: observation.crashCount,
+          latestLatencyP95Ms: observation.latencyP95Ms,
+        },
+      },
+    });
+    const latestRollout = this.store.getRollout(rollout.rolloutId) ?? rollout;
+    return {
+      rollout: latestRollout,
+      observation,
+      status: this.buildRolloutHealthStatus(latestRollout),
+    };
+  }
+
+  async evaluateRollout(input: EvaluateRolloutInput): Promise<{
+    rollout: RolloutRecord;
+    release: ReleaseRecord | null;
+    status: RolloutHealthStatus;
+    appliedAction?: RolloutHealthStatus["autoAction"];
+  }> {
+    const rollout = this.store.getRollout(input.rolloutId);
+    if (!rollout || rollout.projectKey !== input.projectKey) {
+      throw new Error(`rollout not found: ${input.rolloutId}`);
+    }
+    const publishRelease = input.publishRelease !== false;
+    let latestRollout = rollout;
+    const status = this.buildRolloutHealthStatus(rollout, { publishRelease });
+    let appliedAction: RolloutHealthStatus["autoAction"];
+    if (input.autoApply === true && status.autoAction) {
+      const action = status.autoAction;
+      if (action.type === "pause") {
+        latestRollout = this.store.getRollout(rollout.rolloutId) ?? rollout;
+        const now = nowIso();
+        const paused: RolloutRecord = {
+          ...latestRollout,
+          status: "paused",
+          updatedAt: now,
+          metadata: {
+            ...asRecord(latestRollout.metadata),
+            circuitBreakerOpenedAt: now,
+            circuitBreakerReason: action.reason,
+            lastHealth: status,
+          },
+        };
+        this.store.upsertRollout(paused);
+        latestRollout = paused;
+        this.recordEvent({
+          projectId: paused.projectId,
+          projectKey: paused.projectKey,
+          environment: paused.environment,
+          objectType: "rollout",
+          objectId: paused.rolloutId,
+          eventType: "rollout.paused",
+          payload: {
+            releaseId: paused.releaseId,
+            reason: action.reason,
+          },
+          createdBy: input.operator ?? "system",
+        });
+      } else if (action.type === "cancel") {
+        latestRollout = this.cancelRollout({
+          projectKey: rollout.projectKey,
+          rolloutId: rollout.rolloutId,
+          operator: input.operator ?? "system",
+          reason: action.reason,
+        });
+      } else {
+        latestRollout = await this.advanceRollout({
+          projectKey: rollout.projectKey,
+          rolloutId: rollout.rolloutId,
+          trafficPercent: action.trafficPercent ?? 100,
+          operator: input.operator ?? "system",
+          complete: action.type === "complete",
+          publishRelease: action.type === "complete" ? publishRelease : false,
+        });
+      }
+      appliedAction = action;
+    }
+    const latestStatus = this.buildRolloutHealthStatus(latestRollout, {
+      publishRelease,
+    });
+    this.recordEvent({
+      projectId: latestRollout.projectId,
+      projectKey: latestRollout.projectKey,
+      environment: latestRollout.environment,
+      objectType: "rollout",
+      objectId: latestRollout.rolloutId,
+      eventType: "rollout.evaluated",
+      payload: {
+        health: latestStatus.health,
+        appliedAction,
+        aggregate: latestStatus.aggregate,
+      },
+      createdBy: input.operator ?? "system",
+    });
+    return {
+      rollout: latestRollout,
+      release: this.store.getRelease(latestRollout.releaseId),
+      status: latestStatus,
+      appliedAction,
+    };
   }
 
   resolveChannelRoute(params: {

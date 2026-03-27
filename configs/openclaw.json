@@ -83,6 +83,9 @@
             "release_rollout_create",
             "release_rollout_advance",
             "release_rollout_cancel",
+            "release_rollout_status",
+            "release_rollout_observe",
+            "release_rollout_evaluate",
             "release_route_resolve",
             "release_store_status",
             "release_maintenance_run"
@@ -232,6 +235,9 @@
       "release_rollout_create",
       "release_rollout_advance",
       "release_rollout_cancel",
+      "release_rollout_status",
+      "release_rollout_observe",
+      "release_rollout_evaluate",
       "release_route_resolve",
       "release_store_status",
       "release_maintenance_run"
@@ -432,6 +438,32 @@
           "defaultProjectKey": "gamexpert",
           "defaultEnvironment": "staging",
           "defaultChannel": "beta",
+          "projects": {
+            "gamexpert": {
+              "name": "GameXpert",
+              "engine": "godot",
+              "defaultEnvironment": "staging",
+              "defaultChannel": "beta",
+              "environments": ["staging", "production"],
+              "channels": ["dev", "beta", "release"],
+              "grayRelease": {
+                "enabled": true,
+                "rolloutPercentages": [5, 10, 25, 50, 100],
+                "stickiness": "account",
+                "monitoring": {
+                  "enabled": true,
+                  "minSampleSize": 100,
+                  "minSuccessRate": 0.95,
+                  "maxErrorRate": 0.05,
+                  "maxCrashRate": 0.02,
+                  "autoAdvance": true,
+                  "autoAdvanceAfterMinutes": 0,
+                  "publishOnComplete": true,
+                  "circuitBreakerAction": "pause"
+                }
+              }
+            }
+          },
           "routePrefix": "/plugins/lobster-release/api",
           "ciRoutePrefix": "/api/ci/v1",
           "notifierSessionKey": "${LOBSTER_NOTIFIER_SESSION_KEY}",

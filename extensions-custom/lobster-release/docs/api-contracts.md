@@ -312,7 +312,66 @@ Request:
 }
 ```
 
-### 4A.5 Resolve Channel Route
+### 4A.5 Rollout Status
+
+`GET /api/projects/:projectKey/rollouts/:rolloutId/status?publishRelease=true`
+
+Response highlights:
+
+- `rollout`
+- `release`
+- `routeEligible`
+- `status.health`
+- `status.aggregate`
+- `status.nextTrafficPercent`
+- `status.autoAction`
+
+### 4A.6 Record Rollout Observation
+
+`POST /api/projects/:projectKey/rollouts/:rolloutId/observe`
+
+Request:
+
+```json
+{
+  "sampleSize": 200,
+  "successCount": 194,
+  "errorCount": 6,
+  "crashCount": 0,
+  "latencyP95Ms": 380,
+  "source": "synthetic-monitor",
+  "notes": "first canary batch"
+}
+```
+
+Notes:
+
+- records a `rollout.observed` event
+- updates the rollout monitoring snapshot
+- returns aggregated rollout health after the new sample is applied
+
+### 4A.7 Evaluate Rollout
+
+`POST /api/projects/:projectKey/rollouts/:rolloutId/evaluate`
+
+Request:
+
+```json
+{
+  "autoApply": true,
+  "publishRelease": true,
+  "operator": "pengwang"
+}
+```
+
+Notes:
+
+- computes rollout health using accumulated observations
+- can auto-advance healthy rollouts to the next configured percentage
+- can auto-complete and publish the release on the final step
+- can pause or cancel an unhealthy rollout through circuit-breaker policy
+
+### 4A.8 Resolve Channel Route
 
 `GET /api/projects/:projectKey/channels/:channel/route?environment=production&region=cn&audience=internal&bucket=7`
 
@@ -324,6 +383,7 @@ Response highlights:
 - `selectedManifestUrl`
 - `fallbackRelease`
 - `activeRollouts[]`
+- paused rollout records are excluded from routing decisions
 
 ## 5. Build Provenance APIs
 

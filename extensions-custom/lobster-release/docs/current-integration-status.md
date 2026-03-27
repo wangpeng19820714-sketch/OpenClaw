@@ -110,10 +110,17 @@ This document records the current live integration status of `lobster-release`, 
   - operators can create, list, advance, and cancel rollout records
   - route resolution can choose between the stable channel pointer and an active rollout release using `region / audience` plus a deterministic bucket
   - rollback now cancels active rollouts on the same channel before switching the pointer
+- Rollout monitoring and circuit-breaker controls are now implemented.
+  - operators can record rollout observations, inspect rollout health, and evaluate auto-actions
+  - healthy rollout samples can auto-advance traffic using configured rollout percentages
+  - unhealthy rollout samples can pause or cancel the rollout through circuit-breaker policy
+  - paused rollouts remain visible for audit but are excluded from channel routing
 - API integration skeleton is now implemented and validated locally.
   - HTTP tests cover project catalog, gray plan, release creation, release graph, callback nonce replay rejection, store status, and maintenance endpoints
 - Local operator workflow now has a dedicated dev start entrypoint.
   - `pnpm lobster:dev` starts the gateway with `configs/openclaw.json`
+- `gamexpert` gray policy is now configured in `configs/openclaw.json`.
+  - no runtime-only override is required to enable gray rollout behavior during live drills
 
 ## Live Validation Results
 
@@ -210,6 +217,19 @@ The following live release regressions were completed successfully:
   - `advanceRollout({ trafficPercent: 50, publishRelease: true })` published `1.2.22` while keeping the rollout active for continued traffic shaping
   - rollback `rbk_mn89bxlt_06d22f9f` restored the beta pointer back to `1.2.18`
   - the active rollout was automatically canceled during rollback
+- `2026-03-27 live gamexpert formal gray policy drill`
+  - the live drill read `configs/openclaw.json` directly, with `gamexpert.grayRelease.enabled=true` and no temporary override
+  - rollout `rlt_mn89oidy_d87e2bc9` targeted published release `1.2.17` while the stable beta pointer remained `1.2.18`
+  - before expansion, bucket `5` routed to the rollout release and bucket `75` stayed on `1.2.18`
+  - healthy observation data (`sampleSize=200`, `success=196`, `error=4`, `crash=0`) auto-advanced the rollout from `10` to `25`
+  - a second unhealthy sample triggered the circuit breaker and paused the rollout
+  - once paused, the same channel route fell back to `1.2.18`
+  - the rollout was explicitly canceled after the drill to leave no active gray traffic behind
+- `2026-03-27 live gamexpert formal gray policy route supplement`
+  - rollout `rlt_mn89pa0u_44b1b37a` validated post-advance routing after automatic expansion to `25`
+  - bucket `20` routed to rollout release `1.2.17`
+  - bucket `30` stayed on stable release `1.2.18`
+  - the rollout was canceled immediately after verification
 
 ## Current Verified State
 

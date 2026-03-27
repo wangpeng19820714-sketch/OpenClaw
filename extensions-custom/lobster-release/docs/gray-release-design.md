@@ -81,15 +81,74 @@
 4. 用 `bucketValue` 或 `subjectKey` 的稳定哈希决定是否命中 rollout
 5. 未命中则回退到 channel 当前稳定指针
 
-## 7. 仍未完成的部分
+## 7. 当前已经补齐的监控与自动动作
 
-虽然第一层执行能力已经具备，但灰度要真正稳定运营，还缺：
+当前实现已经从“手工灰度工具”推进到了“可执行 rollout 流程”：
 
-- audience/region 维度
-- 客户端分桶约定
-- 数据联动
-- rollout 监控
-- rollout 指标门禁
-- 自动扩量和自动熔断
+- `rollout.status` 新增了 `paused` 语义
+  - `paused` rollout 仍保留记录和人工恢复入口
+  - `paused` rollout 不再参与客户端路由命中
+- 已新增 rollout 观测记录
+  - `rollout.observed`
+  - 观测项包括 `sampleSize / successCount / errorCount / crashCount / latencyP95Ms`
+- 已新增 rollout 健康评估
+  - `healthy`
+  - `unhealthy`
+  - `insufficient_data`
+  - `disabled`
+- 已新增自动动作
+  - 健康时自动扩量到下一个 `rolloutPercentages`
+  - 到达最终步长后可自动完成并发布 release
+  - 不健康时按策略自动 `pause` 或 `cancel`
 
-这些在当前项目阶段还不是最阻塞项。
+## 8. 当前可执行接口
+
+除原有 rollout 控制接口外，当前还新增：
+
+- `GET /projects/:projectKey/rollouts/:rolloutId/status`
+- `POST /projects/:projectKey/rollouts/:rolloutId/observe`
+- `POST /projects/:projectKey/rollouts/:rolloutId/evaluate`
+
+对应 OpenClaw tools：
+
+- `release_rollout_status`
+- `release_rollout_observe`
+- `release_rollout_evaluate`
+
+## 9. 正式配置建议
+
+灰度策略不应只靠 drill 时临时 override，推荐直接写进项目正式配置：
+
+```json
+{
+  "projects": {
+    "gamexpert": {
+      "grayRelease": {
+        "enabled": true,
+        "rolloutPercentages": [5, 10, 25, 50, 100],
+        "stickiness": "account",
+        "monitoring": {
+          "enabled": true,
+          "minSampleSize": 100,
+          "minSuccessRate": 0.95,
+          "maxErrorRate": 0.05,
+          "maxCrashRate": 0.02,
+          "autoAdvance": true,
+          "autoAdvanceAfterMinutes": 0,
+          "publishOnComplete": true,
+          "circuitBreakerAction": "pause"
+        }
+      }
+    }
+  }
+}
+```
+
+## 10. 仍未完成的长期项
+
+当前还没有真正接入外部运营数据系统，所以仍未完成：
+
+- 指标自动采集
+- 版本与运营数据联动
+- 自动熔断后的通知编排升级
+- 多 rollout 并行实验的全链路治理

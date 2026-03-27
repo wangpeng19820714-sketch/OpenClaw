@@ -199,6 +199,17 @@ describe("lobster-release http handler", () => {
             enabled: true,
             rolloutPercentages: [10, 50, 100],
             stickiness: "account",
+            monitoring: {
+              enabled: true,
+              minSampleSize: 100,
+              minSuccessRate: 0.9,
+              maxErrorRate: 0.08,
+              maxCrashRate: 0.02,
+              autoAdvance: true,
+              autoAdvanceAfterMinutes: 0,
+              publishOnComplete: true,
+              circuitBreakerAction: "pause",
+            },
           },
         },
       },
@@ -300,6 +311,50 @@ describe("lobster-release http handler", () => {
     );
     expect(routeRes.statusCode).toBe(200);
     expect(String(routeRes.body)).toContain('"route": "rollout"');
+
+    const observeRes = createMockServerResponse();
+    await handler(
+      createRequest({
+        method: "POST",
+        url: `/plugins/lobster-release/api/projects/projectb/rollouts/${rolloutId}/observe`,
+        body: JSON.stringify({
+          sampleSize: 200,
+          successCount: 194,
+          errorCount: 6,
+          source: "http-test-monitor",
+        }),
+        headers: { "content-type": "application/json" },
+      }),
+      observeRes,
+    );
+    expect(observeRes.statusCode).toBe(200);
+    expect(String(observeRes.body)).toContain('"health": "healthy"');
+
+    const statusRes = createMockServerResponse();
+    await handler(
+      createRequest({
+        method: "GET",
+        url: `/plugins/lobster-release/api/projects/projectb/rollouts/${rolloutId}/status`,
+      }),
+      statusRes,
+    );
+    expect(statusRes.statusCode).toBe(200);
+    expect(String(statusRes.body)).toContain('"nextTrafficPercent": 50');
+
+    const evaluateRes = createMockServerResponse();
+    await handler(
+      createRequest({
+        method: "POST",
+        url: `/plugins/lobster-release/api/projects/projectb/rollouts/${rolloutId}/evaluate`,
+        body: JSON.stringify({
+          autoApply: true,
+        }),
+        headers: { "content-type": "application/json" },
+      }),
+      evaluateRes,
+    );
+    expect(evaluateRes.statusCode).toBe(200);
+    expect(String(evaluateRes.body)).toContain('"type": "advance"');
 
     const advanceRes = createMockServerResponse();
     await handler(

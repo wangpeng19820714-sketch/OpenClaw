@@ -1073,6 +1073,228 @@ describe("lobster-release runtime", () => {
     expect(runtime.getRollout(rollout.rolloutId)?.status).toBe("canceled");
   });
 
+  it("auto-advances healthy rollouts and pauses unhealthy ones", async () => {
+    const runtime = await createRuntimeWithConfig({
+      defaultProjectKey: "projectb",
+      projects: {
+        projectb: {
+          defaultEnvironment: "production",
+          defaultChannel: "release",
+          environments: ["production"],
+          channels: ["release"],
+          grayRelease: {
+            enabled: true,
+            rolloutPercentages: [10, 50, 100],
+            stickiness: "account",
+            monitoring: {
+              enabled: true,
+              minSampleSize: 100,
+              minSuccessRate: 0.9,
+              maxErrorRate: 0.08,
+              maxCrashRate: 0.02,
+              autoAdvance: true,
+              autoAdvanceAfterMinutes: 0,
+              publishOnComplete: true,
+              circuitBreakerAction: "pause",
+            },
+          },
+        },
+      },
+    });
+
+    const stable = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "1.1.0",
+      targets: {
+        androidApk: false,
+        androidAab: true,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: true,
+      createdBy: "tester",
+    });
+    runtime.recordBuildStart(stable.build!.buildId, {
+      jenkinsBuildNumber: 50,
+      jenkinsJob: "GameXpert_Godot_CI",
+    });
+    await runtime.recordBuildPublish(stable.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-1.1.0-50.aab",
+          fileSizeBytes: 100,
+          sha256: "stable-health",
+          storageProvider: "s3",
+          storagePath: "releases/1.1.0-50/ProjectB-android-aab-1.1.0-50.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(stable.build!.buildId, { status: "success" });
+    await runtime.approveRelease(stable.release.releaseId, "approver");
+
+    const candidate = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "1.1.1",
+      targets: {
+        androidApk: false,
+        androidAab: true,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: true,
+      createdBy: "tester",
+    });
+    runtime.recordBuildStart(candidate.build!.buildId, {
+      jenkinsBuildNumber: 51,
+      jenkinsJob: "GameXpert_Godot_CI",
+    });
+    await runtime.recordBuildPublish(candidate.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-1.1.1-51.aab",
+          fileSizeBytes: 100,
+          sha256: "candidate-health",
+          storageProvider: "s3",
+          storagePath: "releases/1.1.1-51/ProjectB-android-aab-1.1.1-51.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(candidate.build!.buildId, { status: "success" });
+
+    const rollout = await runtime.createRollout({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      releaseId: candidate.release.releaseId,
+      trafficPercent: 10,
+      operator: "ops",
+    });
+    const observedHealthy = runtime.recordRolloutObservation({
+      projectKey: "projectb",
+      rolloutId: rollout.rolloutId,
+      sampleSize: 200,
+      successCount: 192,
+      errorCount: 8,
+      crashCount: 0,
+      source: "synthetic-monitor",
+      operator: "ops",
+    });
+    expect(observedHealthy.status.health).toBe("healthy");
+
+    const evaluatedHealthy = await runtime.evaluateRollout({
+      projectKey: "projectb",
+      rolloutId: rollout.rolloutId,
+      autoApply: true,
+      operator: "ops",
+    });
+    expect(evaluatedHealthy.appliedAction?.type).toBe("advance");
+    expect(evaluatedHealthy.rollout.trafficPercent).toBe(50);
+    expect(evaluatedHealthy.rollout.status).toBe("active");
+
+    const secondObservation = runtime.recordRolloutObservation({
+      projectKey: "projectb",
+      rolloutId: rollout.rolloutId,
+      sampleSize: 250,
+      successCount: 230,
+      errorCount: 10,
+      crashCount: 0,
+      source: "synthetic-monitor",
+      operator: "ops",
+    });
+    expect(secondObservation.status.aggregate.sampleSize).toBe(450);
+
+    const completed = await runtime.evaluateRollout({
+      projectKey: "projectb",
+      rolloutId: rollout.rolloutId,
+      autoApply: true,
+      operator: "ops",
+    });
+    expect(completed.appliedAction?.type).toBe("complete");
+    expect(completed.rollout.status).toBe("completed");
+    expect(runtime.getChannelState("projectb", "production", "release")?.currentReleaseId).toBe(
+      candidate.release.releaseId,
+    );
+
+    const unhealthyCandidate = await runtime.createRelease({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      version: "1.1.2",
+      targets: {
+        androidApk: false,
+        androidAab: true,
+        macosApp: false,
+        patch: false,
+      },
+      triggerBuild: true,
+      createdBy: "tester",
+    });
+    runtime.recordBuildStart(unhealthyCandidate.build!.buildId, {
+      jenkinsBuildNumber: 52,
+      jenkinsJob: "GameXpert_Godot_CI",
+    });
+    await runtime.recordBuildPublish(unhealthyCandidate.build!.buildId, {
+      artifacts: [
+        {
+          artifactType: "android_aab",
+          platform: "android",
+          fileName: "ProjectB-android-aab-1.1.2-52.aab",
+          fileSizeBytes: 100,
+          sha256: "candidate-unhealthy",
+          storageProvider: "s3",
+          storagePath: "releases/1.1.2-52/ProjectB-android-aab-1.1.2-52.aab",
+        },
+      ],
+    });
+    await runtime.recordBuildFinish(unhealthyCandidate.build!.buildId, { status: "success" });
+
+    const unhealthyRollout = await runtime.createRollout({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      releaseId: unhealthyCandidate.release.releaseId,
+      trafficPercent: 10,
+      operator: "ops",
+    });
+    runtime.recordRolloutObservation({
+      projectKey: "projectb",
+      rolloutId: unhealthyRollout.rolloutId,
+      sampleSize: 200,
+      successCount: 120,
+      errorCount: 60,
+      crashCount: 20,
+      source: "synthetic-monitor",
+      operator: "ops",
+    });
+
+    const evaluatedUnhealthy = await runtime.evaluateRollout({
+      projectKey: "projectb",
+      rolloutId: unhealthyRollout.rolloutId,
+      autoApply: true,
+      operator: "ops",
+    });
+    expect(evaluatedUnhealthy.status.health).toBe("unhealthy");
+    expect(evaluatedUnhealthy.appliedAction?.type).toBe("pause");
+    expect(runtime.getRollout(unhealthyRollout.rolloutId)?.status).toBe("paused");
+
+    const pausedRoute = runtime.resolveChannelRoute({
+      projectKey: "projectb",
+      environment: "production",
+      channel: "release",
+      bucketValue: 5,
+    });
+    expect(pausedRoute.route).toBe("channel");
+    expect(pausedRoute.selectedRelease?.releaseId).toBe(candidate.release.releaseId);
+  });
+
   it("blocks approve-release while a rollback is still requested", async () => {
     const runtime = await createRuntime();
 

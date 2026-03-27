@@ -33,6 +33,7 @@ export type RollbackStatus =
   | "failed"
   | "canceled";
 export type RolloutStatus = "draft" | "active" | "paused" | "completed" | "canceled";
+export type RolloutHealth = "healthy" | "unhealthy" | "insufficient_data" | "disabled";
 export type RollbackStrategy = "pointer_switch" | "manifest_republish" | "rebuild_and_publish";
 export type ArtifactType =
   | "android_apk"
@@ -207,6 +208,51 @@ export type RolloutRecord = {
   updatedAt: string;
   createdAt: string;
   metadata?: Record<string, unknown>;
+};
+
+export type RolloutObservationRecord = {
+  observedAt: string;
+  source?: string;
+  notes?: string;
+  sampleSize: number;
+  successCount: number;
+  errorCount: number;
+  crashCount: number;
+  latencyP95Ms?: number;
+};
+
+export type RolloutHealthStatus = {
+  rolloutId: string;
+  health: RolloutHealth;
+  thresholds: {
+    enabled: boolean;
+    minSampleSize: number;
+    minSuccessRate: number;
+    maxErrorRate: number;
+    maxCrashRate: number;
+    autoAdvance: boolean;
+    autoAdvanceAfterMinutes: number;
+    publishOnComplete: boolean;
+    circuitBreakerAction: "pause" | "cancel";
+  };
+  aggregate: {
+    sampleSize: number;
+    successCount: number;
+    errorCount: number;
+    crashCount: number;
+    successRate: number;
+    errorRate: number;
+    crashRate: number;
+    latestObservedAt?: string;
+    latencyP95Ms?: number;
+  };
+  observations: RolloutObservationRecord[];
+  nextTrafficPercent?: number;
+  autoAction?: {
+    type: "advance" | "complete" | "pause" | "cancel";
+    trafficPercent?: number;
+    reason: string;
+  };
 };
 
 export type EventLogRecord = {
@@ -437,6 +483,28 @@ export type CancelRolloutInput = {
   rolloutId: string;
   operator?: string;
   reason?: string;
+};
+
+export type RecordRolloutObservationInput = {
+  projectKey: string;
+  rolloutId: string;
+  sampleSize?: number;
+  successCount?: number;
+  errorCount?: number;
+  crashCount?: number;
+  latencyP95Ms?: number;
+  source?: string;
+  notes?: string;
+  observedAt?: string;
+  operator?: string;
+};
+
+export type EvaluateRolloutInput = {
+  projectKey: string;
+  rolloutId: string;
+  autoApply?: boolean;
+  publishRelease?: boolean;
+  operator?: string;
 };
 
 export type RollbackInput = {

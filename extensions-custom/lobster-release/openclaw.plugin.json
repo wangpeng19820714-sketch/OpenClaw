@@ -10,7 +10,7 @@
     },
     "projects": {
       "label": "Project Policies",
-      "help": "Optional per-project policy map for environment/channel isolation, gray rollout defaults, region or audience dimensions, scheduled builds, and smoke workflows."
+      "help": "Optional per-project policy map for environment/channel isolation, gray rollout defaults, rollout monitoring and circuit-breaker policy, region or audience dimensions, scheduled builds, and smoke workflows."
     },
     "defaultEnvironment": {
       "label": "Default Environment",

@@ -15,6 +15,17 @@ export type LobsterReleaseProjectPolicy = {
     enabled: boolean;
     rolloutPercentages: number[];
     stickiness: "channel" | "account" | "device";
+    monitoring: {
+      enabled: boolean;
+      minSampleSize: number;
+      minSuccessRate: number;
+      maxErrorRate: number;
+      maxCrashRate: number;
+      autoAdvance: boolean;
+      autoAdvanceAfterMinutes: number;
+      publishOnComplete: boolean;
+      circuitBreakerAction: "pause" | "cancel";
+    };
   };
   scheduledBuilds: Array<{
     name: string;
@@ -74,6 +85,16 @@ function asInteger(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
+function asNonNegativeInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : fallback;
+}
+
+function asRate(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value
+    : fallback;
+}
+
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? [...new Set(value.filter((item): item is string => typeof item === "string" && item.trim()))]
@@ -99,6 +120,10 @@ function resolveProjectPolicy(raw: unknown): LobsterReleaseProjectPolicy {
   const grayRaw =
     input.grayRelease && typeof input.grayRelease === "object"
       ? (input.grayRelease as Record<string, unknown>)
+      : {};
+  const monitoringRaw =
+    grayRaw.monitoring && typeof grayRaw.monitoring === "object"
+      ? (grayRaw.monitoring as Record<string, unknown>)
       : {};
   const scheduledBuilds = Array.isArray(input.scheduledBuilds)
     ? input.scheduledBuilds
@@ -164,6 +189,17 @@ function resolveProjectPolicy(raw: unknown): LobsterReleaseProjectPolicy {
         grayRaw.stickiness === "account"
           ? grayRaw.stickiness
           : "account",
+      monitoring: {
+        enabled: monitoringRaw.enabled === true,
+        minSampleSize: asNonNegativeInteger(monitoringRaw.minSampleSize, 100),
+        minSuccessRate: asRate(monitoringRaw.minSuccessRate, 0.95),
+        maxErrorRate: asRate(monitoringRaw.maxErrorRate, 0.05),
+        maxCrashRate: asRate(monitoringRaw.maxCrashRate, 0.02),
+        autoAdvance: monitoringRaw.autoAdvance === true,
+        autoAdvanceAfterMinutes: asNonNegativeInteger(monitoringRaw.autoAdvanceAfterMinutes, 0),
+        publishOnComplete: monitoringRaw.publishOnComplete !== false,
+        circuitBreakerAction: monitoringRaw.circuitBreakerAction === "cancel" ? "cancel" : "pause",
+      },
     },
     scheduledBuilds,
     smokeWorkflows: asStringArray(input.smokeWorkflows),

@@ -703,6 +703,21 @@ export function createLobsterReleaseHttpHandler(params: {
           sendJson(res, 200, ok(runtime.getRollout(match[2])));
           return true;
         }
+        match = matchPath(/^\/projects\/([^/]+)\/rollouts\/([^/]+)\/status$/, pathname);
+        if (match) {
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.getRolloutStatus({
+                projectKey: match[1],
+                rolloutId: match[2],
+                publishRelease: url.searchParams.get("publishRelease") !== "false",
+              }),
+            ),
+          );
+          return true;
+        }
         match = matchPath(/^\/projects\/([^/]+)\/channels\/([^/]+)\/route$/, pathname);
         if (match) {
           const environment = url.searchParams.get("environment") as ReleaseEnvironment | null;
@@ -1288,6 +1303,60 @@ export function createLobsterReleaseHttpHandler(params: {
                 rolloutId: match[2],
                 operator: typeof body.operator === "string" ? body.operator : "api",
                 reason: typeof body.reason === "string" ? body.reason : undefined,
+              }),
+            ),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/rollouts\/([^/]+)\/observe$/, pathname);
+        if (match) {
+          const body = await readJsonObjectBody(req, res, {
+            maxBytes: 128 * 1024,
+            timeoutMs: 10_000,
+          });
+          if (!body) {
+            return true;
+          }
+          sendJson(
+            res,
+            200,
+            ok(
+              runtime.recordRolloutObservation({
+                projectKey: match[1],
+                rolloutId: match[2],
+                sampleSize: typeof body.sampleSize === "number" ? body.sampleSize : undefined,
+                successCount: typeof body.successCount === "number" ? body.successCount : undefined,
+                errorCount: typeof body.errorCount === "number" ? body.errorCount : undefined,
+                crashCount: typeof body.crashCount === "number" ? body.crashCount : undefined,
+                latencyP95Ms: typeof body.latencyP95Ms === "number" ? body.latencyP95Ms : undefined,
+                source: typeof body.source === "string" ? body.source : undefined,
+                notes: typeof body.notes === "string" ? body.notes : undefined,
+                observedAt: typeof body.observedAt === "string" ? body.observedAt : undefined,
+                operator: typeof body.operator === "string" ? body.operator : "api",
+              }),
+            ),
+          );
+          return true;
+        }
+        match = matchPath(/^\/projects\/([^/]+)\/rollouts\/([^/]+)\/evaluate$/, pathname);
+        if (match) {
+          const body = await readJsonObjectBody(req, res, {
+            maxBytes: 128 * 1024,
+            timeoutMs: 10_000,
+          });
+          if (!body) {
+            return true;
+          }
+          sendJson(
+            res,
+            200,
+            ok(
+              await runtime.evaluateRollout({
+                projectKey: match[1],
+                rolloutId: match[2],
+                autoApply: body.autoApply === true,
+                publishRelease: body.publishRelease !== false,
+                operator: typeof body.operator === "string" ? body.operator : "api",
               }),
             ),
           );
