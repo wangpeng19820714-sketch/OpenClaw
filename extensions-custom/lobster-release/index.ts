@@ -334,6 +334,32 @@ function createTools(
       },
     }),
     withRuntimeReady({
+      name: "release_trigger",
+      label: "Release Trigger",
+      description: "Manually trigger or retrigger a build for an existing release.",
+      parameters: Type.Object(
+        {
+          projectKey: Type.Optional(Type.String({ minLength: 1 })),
+          releaseId: Type.String({ minLength: 1 }),
+          rebuild: Type.Optional(Type.Boolean()),
+          operator: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_toolCallId, rawParams) {
+        const params = rawParams as Record<string, unknown>;
+        return jsonToolResult(
+          await runtime.triggerRelease({
+            projectKey:
+              typeof params.projectKey === "string" ? params.projectKey : defaultProjectKey,
+            releaseId: String(params.releaseId),
+            rebuild: params.rebuild === true,
+            operator: typeof params.operator === "string" ? params.operator : "agent",
+          }),
+        );
+      },
+    }),
+    withRuntimeReady({
       name: "release_version_suggest",
       label: "Release Version Suggest",
       description: "Suggest the next version for a channel based on bump type.",
@@ -944,6 +970,7 @@ const plugin = {
         "release_build_status",
         "release_preflight",
         "release_create",
+        "release_trigger",
         "release_version_suggest",
         "release_status",
         "release_generate_notes",

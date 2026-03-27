@@ -23,6 +23,7 @@ This document records the current live integration status of `lobster-release`, 
   - release versions must stay in strict `major.minor.patch`
   - duplicate versions in the same `project/environment/channel` are rejected
   - next-version suggestions are available by `patch / minor / major`
+- Existing releases can now be manually retriggered through `release_trigger`.
 - Re-approving an already published release is idempotent and does not corrupt `previousReleaseId`.
 - Repeated Jenkins `start / publish / finish` callbacks now preserve the latest build state instead of regressing it.
 - Repeated Jenkins `publish` callbacks now deduplicate artifacts for the same build.
@@ -53,6 +54,7 @@ This document records the current live integration status of `lobster-release`, 
   - `release_build_status`
   - `release_preflight`
   - `release_generate_notes`
+  - `release_trigger`
   - `release_version_suggest`
   - `release_stable_list`
   - `release_channel_history`

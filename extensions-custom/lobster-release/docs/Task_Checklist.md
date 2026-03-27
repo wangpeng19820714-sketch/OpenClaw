@@ -136,7 +136,7 @@
 - [ ] 归档 Godot 版本、export preset、脚本版本和配置版本
 - [x] 支持 Jenkins queue id / build number 回写
 - [x] 支持主动轮询 Jenkins 状态
-- [ ] 支持 Jenkins 失败后的重试或人工重触发
+- [x] 支持 Jenkins 失败后的重试或人工重触发
 
 ## 9. 产物与 Manifest
 
@@ -181,7 +181,7 @@
 - [x] 实现 patch 覆盖冲突检测
 - [x] 实现客户端兼容性校验
 - [x] 实现发布前 smoke gate 或最小校验门
-- [ ] 输出联调鉴权文档
+- [x] 输出联调鉴权文档
 
 ## 12. OpenClaw 集成
 
@@ -315,6 +315,7 @@
 - [extensions-custom/lobster-release/docs/jenkins-integration.md](extensions-custom/lobster-release/docs/jenkins-integration.md)
 - [extensions-custom/lobster-release/docs/deployment.md](extensions-custom/lobster-release/docs/deployment.md)
 - [extensions-custom/lobster-release/docs/troubleshooting.md](extensions-custom/lobster-release/docs/troubleshooting.md)
+- [extensions-custom/lobster-release/docs/callback-authentication.md](extensions-custom/lobster-release/docs/callback-authentication.md)
 
 ## 19. 第一阶段建议验收标准
 
