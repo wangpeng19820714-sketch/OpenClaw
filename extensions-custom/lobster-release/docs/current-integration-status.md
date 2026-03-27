@@ -222,6 +222,10 @@ This document records the current live integration status of `lobster-release`, 
   - HTTP tests cover project catalog, gray plan, release creation, release graph, callback nonce replay rejection, store status, and maintenance endpoints
 - Local operator workflow now has a dedicated dev start entrypoint.
   - `pnpm lobster:dev` starts the gateway with `configs/openclaw.json`
+- `lobster-release` is now packaged as an npm-installable OpenClaw plugin.
+  - `package.json` exposes `openclaw.extensions` and `openclaw.install`
+  - package publish boundary is constrained through `files`
+  - target hosts can install it with `openclaw plugins install <npm-spec>` once published
 - `gamexpert` gray policy is now configured in `configs/openclaw.json`.
   - no runtime-only override is required to enable gray rollout behavior during live drills
   - scheduled rollout inspection is configured with `grayRelease.monitoring.tickCron = "*/5 * * * *"`

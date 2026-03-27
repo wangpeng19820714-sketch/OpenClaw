@@ -1,5 +1,28 @@
 # 部署说明
 
+## 0. 一键安装形态
+
+`lobster-release` 当前已经整理为可独立发布的 npm 插件包形态。
+
+目标 OpenClaw 节点可直接安装：
+
+```bash
+openclaw plugins install @openclaw/lobster-release
+openclaw plugins enable lobster-release
+```
+
+如果你发布的是自己的 fork，需要把安装命令替换成你自己的 npm spec，例如：
+
+```bash
+openclaw plugins install @your-scope/openclaw-lobster-release
+```
+
+安装后仍然需要：
+
+- 重启 gateway
+- 配置 `plugins.entries.lobster-release.config`
+- 准备 PostgreSQL 与 Jenkins 连通性
+
 ## 1. 当前推荐部署形态
 
 当前已经验证过的稳定形态：

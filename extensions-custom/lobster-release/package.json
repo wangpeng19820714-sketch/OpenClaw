@@ -9,15 +9,54 @@
     "openclaw",
     "release"
   ],
+  "homepage": "https://github.com/wangpeng19820714-sketch/OpenClaw/tree/main/extensions-custom/lobster-release",
+  "bugs": {
+    "url": "https://github.com/wangpeng19820714-sketch/OpenClaw/issues"
+  },
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wangpeng19820714-sketch/OpenClaw.git",
+    "directory": "extensions-custom/lobster-release"
+  },
+  "files": [
+    "README.md",
+    "openclaw.plugin.json",
+    "config.ts",
+    "http.ts",
+    "index.ts",
+    "postgres.runtime.ts",
+    "runtime.ts",
+    "store.ts",
+    "types.ts",
+    "versioning.ts",
+    "docker-compose.postgres.yml",
+    "docs"
+  ],
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@sinclair/typebox": "0.34.48",
     "postgres": "3.4.8"
   },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.9"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
   "openclaw": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "install": {
+      "npmSpec": "@openclaw/lobster-release",
+      "localPath": "extensions-custom/lobster-release",
+      "defaultChoice": "npm"
+    }
   }
 }

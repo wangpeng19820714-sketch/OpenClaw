@@ -255,6 +255,9 @@
 - [x] 创建环境变量示例文件
 - [x] 创建本地开发启动脚本
 - [x] 确认第一阶段保持 `extensions-custom/lobster-release` 插件目录实现，不额外拆分 `src/server / src/domain / src/storage / src/openclaw` 骨架
+- [x] 整理为可独立发布的 npm 插件包形态
+- [x] 增加 `openclaw.install` 元数据，支持 `openclaw plugins install <npm-spec>`
+- [x] 增加 npm 发布边界与安装说明
 
 ## 16. 测试
 
