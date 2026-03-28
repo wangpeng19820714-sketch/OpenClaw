@@ -36,6 +36,27 @@
         "google-gemini-cli/gemini-3-pro-preview": {}
       },
       "workspace": "~/.openclaw/workspace",
+      "memorySearch": {
+        "enabled": true,
+        "sources": ["memory", "sessions"],
+        "experimental": {
+          "sessionMemory": true
+        },
+        "fallback": "none",
+        "sync": {
+          "onSessionStart": true,
+          "onSearch": true,
+          "watch": true,
+          "intervalMinutes": 30,
+          "sessions": {
+            "deltaBytes": 100000,
+            "deltaMessages": 50
+          }
+        },
+        "query": {
+          "maxResults": 8
+        }
+      },
       "compaction": {
         "mode": "safeguard"
       }
@@ -90,7 +111,9 @@
             "release_rollout_tick_all",
             "release_route_resolve",
             "release_store_status",
-            "release_maintenance_run"
+            "release_maintenance_run",
+            "release_cleanup_preview",
+            "release_cleanup_now"
           ],
           "deny": []
         }
@@ -195,7 +218,9 @@
             "release_rollout_tick_all",
             "release_route_resolve",
             "release_store_status",
-            "release_maintenance_run"
+            "release_maintenance_run",
+            "release_cleanup_preview",
+            "release_cleanup_now"
           ],
           "deny": []
         }
@@ -396,7 +421,7 @@
     "backend": "acpx",
     "defaultAgent": "codex",
     "allowedAgents": ["pi", "claude", "codex", "opencode", "gemini", "kimi"],
-    "maxConcurrentSessions": 8,
+    "maxConcurrentSessions": 4,
     "stream": {
       "coalesceIdleMs": 300,
       "maxChunkChars": 1200
@@ -406,20 +431,9 @@
     }
   },
   "plugins": {
-    "allow": [
-      "feishu",
-      "google-gemini-cli-auth",
-      "device-pair",
-      "mem0",
-      "orchestrator",
-      "lobster-release",
-      "acpx"
-    ],
+    "allow": ["feishu", "google-gemini-cli-auth", "device-pair", "lobster-release", "acpx"],
     "load": {
-      "paths": [
-        "/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/mem0-openclaw",
-        "/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/orchestrator"
-      ]
+      "paths": []
     },
     "installs": {
       "lobster-release": {
@@ -431,7 +445,7 @@
       }
     },
     "slots": {
-      "memory": "mem0"
+      "memory": "memory-core"
     },
     "entries": {
       "feishu": {
@@ -439,26 +453,6 @@
       },
       "google-gemini-cli-auth": {
         "enabled": true
-      },
-      "mem0": {
-        "enabled": true,
-        "config": {
-          "baseUrl": "http://127.0.0.1:8888",
-          "topK": 5,
-          "requestTimeoutMs": 120000
-        }
-      },
-      "orchestrator": {
-        "enabled": true,
-        "config": {
-          "pollIntervalMs": 5000,
-          "leaseTtlMs": 60000,
-          "maxConcurrentWorkflows": 2,
-          "maxConcurrentSteps": 4,
-          "defaultRunTimeoutSeconds": 300,
-          "defaultRetryLimit": 1,
-          "allowedTargetAgents": ["pm", "ba", "client", "main", "server"]
-        }
       },
       "lobster-release": {
         "enabled": true,
