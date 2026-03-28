@@ -176,10 +176,26 @@
             "message",
             "feishu_app_scopes",
             "feishu_chat",
+            "release_notifications_drain",
             "release_notifications_pull",
             "release_notifications_render",
             "release_notifications_ack",
-            "release_notifications_fail"
+            "release_notifications_fail",
+            "release_notifications_requeue",
+            "release_project_catalog",
+            "release_gray_plan",
+            "release_rollout_list",
+            "release_rollout_create",
+            "release_rollout_advance",
+            "release_rollout_cancel",
+            "release_rollout_status",
+            "release_rollout_observe",
+            "release_rollout_evaluate",
+            "release_rollout_tick",
+            "release_rollout_tick_all",
+            "release_route_resolve",
+            "release_store_status",
+            "release_maintenance_run"
           ],
           "deny": []
         }
@@ -390,12 +406,29 @@
     }
   },
   "plugins": {
-    "allow": ["feishu", "google-gemini-cli-auth", "device-pair", "mem0", "orchestrator", "acpx"],
+    "allow": [
+      "feishu",
+      "google-gemini-cli-auth",
+      "device-pair",
+      "mem0",
+      "orchestrator",
+      "lobster-release",
+      "acpx"
+    ],
     "load": {
       "paths": [
         "/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/mem0-openclaw",
         "/Users/pengwang/Documents/GitHub/OpenClaw/extensions-custom/orchestrator"
       ]
+    },
+    "installs": {
+      "lobster-release": {
+        "source": "path",
+        "sourcePath": "/Users/pengwang/lobster-release",
+        "installPath": "/Users/pengwang/.openclaw/extensions/lobster-release",
+        "version": "0.1.0",
+        "installedAt": "2026-03-28T00:48:21.965Z"
+      }
     },
     "slots": {
       "memory": "mem0"
@@ -425,6 +458,62 @@
           "defaultRunTimeoutSeconds": 300,
           "defaultRetryLimit": 1,
           "allowedTargetAgents": ["pm", "ba", "client", "main", "server"]
+        }
+      },
+      "lobster-release": {
+        "enabled": true,
+        "config": {
+          "defaultProjectKey": "gamexpert",
+          "defaultEnvironment": "staging",
+          "defaultChannel": "beta",
+          "projects": {
+            "gamexpert": {
+              "name": "GameXpert",
+              "engine": "godot",
+              "defaultEnvironment": "staging",
+              "defaultChannel": "beta",
+              "environments": ["staging", "production"],
+              "channels": ["dev", "beta", "release"],
+              "grayRelease": {
+                "enabled": true,
+                "rolloutPercentages": [5, 10, 25, 50, 100],
+                "stickiness": "account",
+                "monitoring": {
+                  "enabled": true,
+                  "tickCron": "*/5 * * * *",
+                  "minSampleSize": 100,
+                  "minSuccessRate": 0.95,
+                  "maxErrorRate": 0.05,
+                  "maxCrashRate": 0.02,
+                  "autoAdvance": true,
+                  "autoAdvanceAfterMinutes": 0,
+                  "publishOnComplete": true,
+                  "circuitBreakerAction": "pause"
+                }
+              }
+            }
+          },
+          "dbDriver": "postgres",
+          "postgresConnectionString": "${LOBSTER_POSTGRES_CONNECTION_STRING}",
+          "postgresSchema": "${LOBSTER_POSTGRES_SCHEMA}",
+          "routePrefix": "/plugins/lobster-release/api",
+          "ciRoutePrefix": "/api/ci/v1",
+          "notifierSessionKey": "${LOBSTER_NOTIFIER_SESSION_KEY}",
+          "publicBaseUrl": "${LOBSTER_PUBLIC_BASE_URL}",
+          "ciApiKey": "${LOBSTER_CI_API_KEY}",
+          "ciApiSecret": "${LOBSTER_CI_API_SECRET}",
+          "jenkinsBaseUrl": "${LOBSTER_JENKINS_BASE_URL}",
+          "jenkinsJob": "GameXpert_Godot_CI",
+          "jenkinsUser": "${LOBSTER_JENKINS_USER}",
+          "jenkinsApiToken": "${LOBSTER_JENKINS_API_TOKEN}",
+          "jenkinsLobsterApiKeyCredentialsId": "lobster-api-key",
+          "jenkinsLobsterApiSecretCredentialsId": "lobster-api-secret",
+          "jenkinsAndroidKeystoreBase64CredentialsId": "gamexpert-android-keystore-base64",
+          "jenkinsAndroidKeystoreAliasCredentialsId": "gamexpert-android-keystore-alias",
+          "jenkinsAndroidKeystorePasswordCredentialsId": "gamexpert-android-keystore-password",
+          "uploadDestinationDir": "${LOBSTER_UPLOAD_DESTINATION_DIR}",
+          "uploadBaseUrl": "${LOBSTER_UPLOAD_BASE_URL}",
+          "autoPublishDev": true
         }
       },
       "acpx": {
