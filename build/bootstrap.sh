@@ -11,7 +11,6 @@ readonly DEFAULT_OPENCLAW_VERSION="2026.3.2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEFAULT_CONFIG_PATH="${REPO_ROOT}/configs/openclaw.json"
-SETUP_MEM0_SCRIPT="${REPO_ROOT}/scripts/setup-mem0.sh"
 
 ENV_FILE="${OPENCLAW_ENV_FILE:-${REPO_ROOT}/.env}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
@@ -26,7 +25,6 @@ GEMINI_CLI_NPM_SPEC="${OPENCLAW_GEMINI_CLI_NPM_SPEC:-@google/gemini-cli}"
 GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-${DEFAULT_PORT}}"
 GATEWAY_LAUNCHD_LABEL="${OPENCLAW_LAUNCHD_LABEL:-ai.openclaw.gateway}"
 GATEWAY_LAUNCHD_PLIST="${HOME}/Library/LaunchAgents/${GATEWAY_LAUNCHD_LABEL}.plist"
-OPENCLAW_MEM0_BOOTSTRAP_MODE="${OPENCLAW_MEM0_BOOTSTRAP_MODE:-auto}"
 
 if [[ -z "${OPENCLAW_CONFIG_PATH:-}" && -f "${DEFAULT_CONFIG_PATH}" ]]; then
   export OPENCLAW_CONFIG_PATH="${DEFAULT_CONFIG_PATH}"
@@ -263,57 +261,6 @@ sync_env_to_state_dir() {
   log "Synced .env to ${target_env} (for launchd daemon runtime)."
 }
 
-config_uses_mem0_bridge() {
-  local config_path="${OPENCLAW_CONFIG_PATH:-}"
-  [[ -n "${config_path}" && -f "${config_path}" ]] || return 1
-
-  node -e '
-const fs = require("fs");
-const path = process.argv[1];
-const raw = fs.readFileSync(path, "utf8");
-const config = JSON.parse(raw);
-const paths = config?.plugins?.load?.paths;
-const slot = config?.plugins?.slots?.memory;
-const enabled = config?.plugins?.entries?.mem0?.enabled;
-const usesBridge = Array.isArray(paths) && paths.some((entry) =>
-  typeof entry === "string" && entry.includes("mem0-openclaw"),
-);
-process.exit(usesBridge || slot === "mem0" || enabled === true ? 0 : 1);
-' "${config_path}"
-}
-
-should_bootstrap_mem0() {
-  case "${OPENCLAW_MEM0_BOOTSTRAP_MODE}" in
-    always)
-      return 0
-      ;;
-    never)
-      return 1
-      ;;
-    auto)
-      config_uses_mem0_bridge
-      return $?
-      ;;
-    *)
-      die "Unsupported OPENCLAW_MEM0_BOOTSTRAP_MODE: ${OPENCLAW_MEM0_BOOTSTRAP_MODE} (expected auto|always|never)"
-      ;;
-  esac
-}
-
-ensure_mem0_deployed_if_needed() {
-  if [[ ! -x "${SETUP_MEM0_SCRIPT}" ]]; then
-    log "Skip Mem0 bootstrap: script not executable (${SETUP_MEM0_SCRIPT})."
-    return 0
-  fi
-
-  if ! should_bootstrap_mem0; then
-    log "Skip Mem0 bootstrap (mode=${OPENCLAW_MEM0_BOOTSTRAP_MODE})."
-    return 0
-  fi
-
-  run_quiet "Deploying external Mem0 stack" bash "${SETUP_MEM0_SCRIPT}"
-}
-
 extract_expected_version_from_spec() {
   if [[ "${OPENCLAW_NPM_SPEC}" =~ ^[^@]+@([0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9]+)*)$ ]]; then
     echo "${BASH_REMATCH[1]}"
@@ -510,7 +457,6 @@ cmd_deploy() {
   load_env_file
   ensure_openclaw_installed
   sync_env_to_state_dir
-  ensure_mem0_deployed_if_needed
   ensure_requested_oauth_providers_ready
   configure_gateway_defaults
   install_gateway_daemon
@@ -530,7 +476,6 @@ cmd_start() {
   load_env_file
   ensure_openclaw_installed
   sync_env_to_state_dir
-  ensure_mem0_deployed_if_needed
   ensure_requested_oauth_providers_ready
   ensure_gateway_launchagent_loaded || true
   stop_residual_gateway_processes
@@ -648,7 +593,6 @@ cmd_update() {
   load_env_file
   update_openclaw
   sync_env_to_state_dir
-  ensure_mem0_deployed_if_needed
   configure_gateway_defaults
   install_gateway_daemon
   run_quiet "Stopping gateway service after update" "${OPENCLAW_BIN}" gateway stop
@@ -679,9 +623,6 @@ Environment variables:
                        (example: google-gemini-cli,openai-codex)
   OPENCLAW_OAUTH_SKIP   Skip OAuth verification when set to 1/true/yes/on
   OPENCLAW_GATEWAY_PORT Default gateway port (default: ${DEFAULT_PORT})
-  OPENCLAW_MEM0_BOOTSTRAP_MODE
-                       Mem0 deploy behavior during deploy/start/update:
-                       auto (default), always, or never
 USAGE
 }
 

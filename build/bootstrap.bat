@@ -11,7 +11,6 @@ set "DEFAULT_OPENCLAW_VERSION=2026.3.2"
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..") do set "REPO_ROOT=%%~fI"
 set "DEFAULT_CONFIG_PATH=%REPO_ROOT%\configs\openclaw.json"
-set "SETUP_MEM0_SCRIPT=%REPO_ROOT%\scripts\setup-mem0.bat"
 
 if not defined OPENCLAW_CONFIG_PATH if exist "%DEFAULT_CONFIG_PATH%" (
   set "OPENCLAW_CONFIG_PATH=%DEFAULT_CONFIG_PATH%"
@@ -77,11 +76,6 @@ if defined OPENCLAW_GATEWAY_PORT (
   set "GATEWAY_PORT=%DEFAULT_PORT%"
 )
 
-if defined OPENCLAW_MEM0_BOOTSTRAP_MODE (
-  set "OPENCLAW_MEM0_BOOTSTRAP_MODE=%OPENCLAW_MEM0_BOOTSTRAP_MODE%"
-) else (
-  set "OPENCLAW_MEM0_BOOTSTRAP_MODE=auto"
-)
 
 call :main %*
 exit /b %ERRORLEVEL%
@@ -445,39 +439,6 @@ call :die "Installing gateway daemon (port %GATEWAY_PORT%) failed"
 exit /b 1
 exit /b 0
 
-:config_uses_mem0_bridge
-if not defined OPENCLAW_CONFIG_PATH exit /b 1
-if not exist "%OPENCLAW_CONFIG_PATH%" exit /b 1
-
-node -e "const fs = require('fs'); const p = process.argv[1]; const raw = fs.readFileSync(p, 'utf8'); const cfg = JSON.parse(raw); const paths = cfg?.plugins?.load?.paths; const slot = cfg?.plugins?.slots?.memory; const enabled = cfg?.plugins?.entries?.mem0?.enabled; const usesBridge = Array.isArray(paths) && paths.some((entry) => typeof entry === 'string' && entry.includes('mem0-openclaw')); process.exit(usesBridge || slot === 'mem0' || enabled === true ? 0 : 1);" "%OPENCLAW_CONFIG_PATH%" >nul 2>&1
-exit /b %ERRORLEVEL%
-
-:should_bootstrap_mem0
-if /I "%OPENCLAW_MEM0_BOOTSTRAP_MODE%"=="always" exit /b 0
-if /I "%OPENCLAW_MEM0_BOOTSTRAP_MODE%"=="never" exit /b 1
-if /I "%OPENCLAW_MEM0_BOOTSTRAP_MODE%"=="auto" (
-  call :config_uses_mem0_bridge
-  exit /b %ERRORLEVEL%
-)
-call :die "Unsupported OPENCLAW_MEM0_BOOTSTRAP_MODE: %OPENCLAW_MEM0_BOOTSTRAP_MODE% (expected auto|always|never)"
-exit /b 2
-
-:ensure_mem0_deployed_if_needed
-if not exist "%SETUP_MEM0_SCRIPT%" (
-  call :log "Skip Mem0 bootstrap: script not found (%SETUP_MEM0_SCRIPT%)."
-  exit /b 0
-)
-
-call :should_bootstrap_mem0
-if errorlevel 2 exit /b 1
-if errorlevel 1 (
-  call :log "Skip Mem0 bootstrap (mode=%OPENCLAW_MEM0_BOOTSTRAP_MODE%)."
-  exit /b 0
-)
-
-call :run_quiet "Deploying external Mem0 stack" "%SETUP_MEM0_SCRIPT%" || exit /b 1
-exit /b 0
-
 :provider_needs_gemini_cli
 if /I "%~1"=="google-gemini-cli" exit /b 0
 exit /b 1
@@ -639,7 +600,6 @@ call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :ensure_openclaw_installed || exit /b 1
 call :sync_env_to_state_dir || exit /b 1
-call :ensure_mem0_deployed_if_needed || exit /b 1
 call :ensure_requested_oauth_providers_ready || exit /b 1
 call :configure_gateway_defaults || exit /b 1
 call :install_gateway_daemon || exit /b 1
@@ -655,7 +615,6 @@ call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :ensure_openclaw_installed || exit /b 1
 call :sync_env_to_state_dir || exit /b 1
-call :ensure_mem0_deployed_if_needed || exit /b 1
 call :ensure_requested_oauth_providers_ready || exit /b 1
 call :stop_residual_gateway_processes || exit /b 1
 call :run_quiet "Starting gateway service" "%OPENCLAW_BIN%" gateway start || exit /b 1
@@ -793,7 +752,6 @@ call :ensure_log_dir || exit /b 1
 call :load_env_file || exit /b 1
 call :update_openclaw || exit /b 1
 call :sync_env_to_state_dir || exit /b 1
-call :ensure_mem0_deployed_if_needed || exit /b 1
 call :ensure_requested_oauth_providers_ready || exit /b 1
 call :disable_local_plugins || exit /b 1
 call :configure_gateway_defaults || exit /b 1
@@ -825,6 +783,4 @@ echo                        Comma-separated OAuth providers to verify during dep
 echo                        (example: google-gemini-cli,openai-codex)
 echo   OPENCLAW_OAUTH_SKIP   Skip OAuth verification when set to 1/true/yes/on
 echo   OPENCLAW_GATEWAY_PORT Default gateway port (default: %DEFAULT_PORT%)
-echo   OPENCLAW_MEM0_BOOTSTRAP_MODE
-echo                        Mem0 deploy behavior during deploy/start/update: auto, always, or never
 exit /b 0
