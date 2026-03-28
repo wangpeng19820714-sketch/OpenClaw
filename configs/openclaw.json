@@ -1,0 +1,528 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.3.24",
+    "lastTouchedAt": "2026-03-28T14:07:47.807Z"
+  },
+  "update": {
+    "channel": "stable",
+    "checkOnStart": true,
+    "auto": {
+      "enabled": true,
+      "stableDelayHours": 6,
+      "stableJitterHours": 12,
+      "betaCheckIntervalHours": 1
+    }
+  },
+  "auth": {
+    "profiles": {
+      "openai-codex:default": {
+        "provider": "openai-codex",
+        "mode": "oauth"
+      },
+      "google-gemini-cli:default": {
+        "provider": "google-gemini-cli",
+        "mode": "oauth"
+      },
+      "google-gemini-cli:wangpeng19820714@gmail.com": {
+        "provider": "google-gemini-cli",
+        "mode": "oauth"
+      }
+    },
+    "order": {
+      "openai-codex": ["openai-codex:default"],
+      "google-gemini-cli": [
+        "google-gemini-cli:wangpeng19820714@gmail.com",
+        "google-gemini-cli:default"
+      ]
+    }
+  },
+  "acp": {
+    "enabled": true,
+    "dispatch": {
+      "enabled": true
+    },
+    "backend": "acpx",
+    "defaultAgent": "codex",
+    "allowedAgents": ["pi", "claude", "codex", "opencode", "gemini", "kimi"],
+    "maxConcurrentSessions": 4,
+    "stream": {
+      "coalesceIdleMs": 300,
+      "maxChunkChars": 1200
+    },
+    "runtime": {
+      "ttlMinutes": 120
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "google-gemini-cli/gemini-3-pro-preview",
+        "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
+      },
+      "models": {
+        "google-gemini-cli/gemini-3-pro-preview": {}
+      },
+      "workspace": "~/.openclaw/workspace",
+      "memorySearch": {
+        "enabled": true,
+        "sources": ["memory", "sessions"],
+        "experimental": {
+          "sessionMemory": true
+        },
+        "fallback": "none",
+        "sync": {
+          "onSessionStart": true,
+          "onSearch": true,
+          "watch": true,
+          "intervalMinutes": 30,
+          "sessions": {
+            "deltaBytes": 100000,
+            "deltaMessages": 50
+          }
+        },
+        "query": {
+          "maxResults": 8
+        }
+      },
+      "compaction": {
+        "mode": "safeguard"
+      }
+    },
+    "list": [
+      {
+        "id": "main",
+        "default": true,
+        "workspace": "~/.openclaw/workspace/main",
+        "model": {
+          "primary": "google-gemini-cli/gemini-3-pro-preview"
+        },
+        "subagents": {
+          "allowAgents": ["client", "pm", "server", "ba"]
+        },
+        "tools": {
+          "allow": [
+            "read",
+            "edit",
+            "write",
+            "exec",
+            "web_search",
+            "web_fetch",
+            "memory_search",
+            "memory_store",
+            "memory_list",
+            "agents_list",
+            "sessions_list",
+            "sessions_history",
+            "sessions_send",
+            "sessions_spawn",
+            "session_status",
+            "subagents",
+            "feishu_app_scopes",
+            "feishu_chat",
+            "release_notifications_drain",
+            "release_notifications_pull",
+            "release_notifications_render",
+            "release_notifications_ack",
+            "release_notifications_fail",
+            "release_notifications_requeue",
+            "release_project_catalog",
+            "release_gray_plan",
+            "release_rollout_list",
+            "release_rollout_create",
+            "release_rollout_advance",
+            "release_rollout_cancel",
+            "release_rollout_status",
+            "release_rollout_observe",
+            "release_rollout_evaluate",
+            "release_rollout_tick",
+            "release_rollout_tick_all",
+            "release_route_resolve",
+            "release_store_status",
+            "release_maintenance_run",
+            "release_cleanup_preview",
+            "release_cleanup_now"
+          ],
+          "deny": []
+        }
+      },
+      {
+        "id": "client",
+        "workspace": "~/.openclaw/workspace/client",
+        "model": {
+          "primary": "openai-codex/gpt-5.4",
+          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
+        },
+        "subagents": {
+          "allowAgents": ["main", "pm", "server", "ba"]
+        },
+        "tools": {
+          "allow": [
+            "read",
+            "edit",
+            "write",
+            "exec",
+            "web_search",
+            "web_fetch",
+            "memory_search",
+            "memory_store",
+            "memory_list",
+            "agents_list",
+            "sessions_list",
+            "sessions_history",
+            "sessions_send",
+            "sessions_spawn",
+            "session_status",
+            "subagents",
+            "message",
+            "feishu_app_scopes",
+            "feishu_chat"
+          ],
+          "deny": []
+        }
+      },
+      {
+        "id": "server",
+        "workspace": "~/.openclaw/workspace/server",
+        "model": {
+          "primary": "openai-codex/gpt-5.4",
+          "fallbacks": ["google-gemini-cli/gemini-3-pro-preview"]
+        },
+        "tools": {
+          "allow": [],
+          "deny": []
+        }
+      },
+      {
+        "id": "pm",
+        "workspace": "~/.openclaw/workspace/pm",
+        "model": {
+          "primary": "openai-codex/gpt-5.4",
+          "fallbacks": [
+            "google-gemini-cli/gemini-3-flash-preview",
+            "google-gemini-cli/gemini-3-pro-preview"
+          ]
+        },
+        "subagents": {
+          "allowAgents": ["main", "client", "server", "ba"]
+        },
+        "tools": {
+          "allow": [
+            "read",
+            "edit",
+            "write",
+            "exec",
+            "web_search",
+            "web_fetch",
+            "memory_search",
+            "memory_store",
+            "memory_list",
+            "agents_list",
+            "sessions_list",
+            "sessions_history",
+            "sessions_send",
+            "sessions_spawn",
+            "session_status",
+            "subagents",
+            "message",
+            "feishu_app_scopes",
+            "feishu_chat",
+            "release_notifications_drain",
+            "release_notifications_pull",
+            "release_notifications_render",
+            "release_notifications_ack",
+            "release_notifications_fail",
+            "release_notifications_requeue",
+            "release_project_catalog",
+            "release_gray_plan",
+            "release_rollout_list",
+            "release_rollout_create",
+            "release_rollout_advance",
+            "release_rollout_cancel",
+            "release_rollout_status",
+            "release_rollout_observe",
+            "release_rollout_evaluate",
+            "release_rollout_tick",
+            "release_rollout_tick_all",
+            "release_route_resolve",
+            "release_store_status",
+            "release_maintenance_run",
+            "release_cleanup_preview",
+            "release_cleanup_now"
+          ],
+          "deny": []
+        }
+      },
+      {
+        "id": "ba",
+        "workspace": "~/.openclaw/workspace/ba",
+        "model": {
+          "primary": "openai-codex/gpt-5.4",
+          "fallbacks": [
+            "google-gemini-cli/gemini-3-flash-preview",
+            "google-gemini-cli/gemini-3-pro-preview"
+          ]
+        },
+        "subagents": {
+          "allowAgents": ["main", "client", "server", "pm"]
+        },
+        "tools": {
+          "allow": [
+            "read",
+            "edit",
+            "write",
+            "exec",
+            "web_search",
+            "web_fetch",
+            "memory_search",
+            "memory_store",
+            "memory_list",
+            "agents_list",
+            "sessions_list",
+            "sessions_history",
+            "sessions_send",
+            "sessions_spawn",
+            "session_status",
+            "subagents",
+            "feishu_app_scopes",
+            "feishu_chat"
+          ],
+          "deny": []
+        }
+      }
+    ]
+  },
+  "tools": {
+    "alsoAllow": [
+      "release_notifications_drain",
+      "release_notifications_pull",
+      "release_notifications_render",
+      "release_notifications_ack",
+      "release_notifications_fail",
+      "release_notifications_requeue",
+      "release_project_catalog",
+      "release_gray_plan",
+      "release_rollout_list",
+      "release_rollout_create",
+      "release_rollout_advance",
+      "release_rollout_cancel",
+      "release_rollout_status",
+      "release_rollout_observe",
+      "release_rollout_evaluate",
+      "release_rollout_tick",
+      "release_rollout_tick_all",
+      "release_route_resolve",
+      "release_store_status",
+      "release_maintenance_run"
+    ],
+    "sessions": {
+      "visibility": "all"
+    },
+    "agentToAgent": {
+      "enabled": true,
+      "allow": ["main", "client", "server", "pm", "ba"]
+    },
+    "exec": {
+      "pathPrepend": ["/Users/pengwang/Documents/GitHub/openclaw-main"]
+    }
+  },
+  "bindings": [
+    {
+      "agentId": "main",
+      "match": {
+        "channel": "feishu",
+        "accountId": "bot_main"
+      }
+    },
+    {
+      "agentId": "client",
+      "match": {
+        "channel": "feishu",
+        "accountId": "bot_client"
+      }
+    },
+    {
+      "agentId": "server",
+      "match": {
+        "channel": "feishu",
+        "accountId": "bot_server"
+      }
+    },
+    {
+      "agentId": "pm",
+      "match": {
+        "channel": "feishu",
+        "accountId": "bot_pm"
+      }
+    },
+    {
+      "agentId": "ba",
+      "match": {
+        "channel": "feishu",
+        "accountId": "bot_ba"
+      }
+    }
+  ],
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw",
+    "allowFrom": {
+      "feishu": ["${FEISHU_MAIN_OWNER_OPEN_ID}"]
+    }
+  },
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "connectionMode": "websocket",
+      "domain": "feishu",
+      "requireMention": false,
+      "defaultAccount": "bot_main",
+      "groups": {},
+      "accounts": {
+        "default": {
+          "dmPolicy": "open",
+          "allowFrom": ["*"],
+          "groupPolicy": "open",
+          "groupAllowFrom": []
+        },
+        "bot_main": {
+          "enabled": true,
+          "appId": "${FEISHU_MAIN_APP_ID}",
+          "appSecret": "${FEISHU_MAIN_APP_SECRET}"
+        },
+        "bot_client": {
+          "enabled": true,
+          "appId": "${FEISHU_CLIENT_APP_ID}",
+          "appSecret": "${FEISHU_CLIENT_APP_SECRET}"
+        },
+        "bot_server": {
+          "enabled": false
+        },
+        "bot_pm": {
+          "enabled": true,
+          "appId": "${FEISHU_PM_APP_ID}",
+          "appSecret": "${FEISHU_PM_APP_SECRET}"
+        },
+        "bot_ba": {
+          "enabled": true,
+          "appId": "${FEISHU_BA_APP_ID}",
+          "appSecret": "${FEISHU_BA_APP_SECRET}"
+        }
+      }
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "custom",
+    "customBindHost": "127.0.0.1",
+    "controlUi": {
+      "allowedOrigins": ["http://localhost:18789", "http://127.0.0.1:18789"]
+    },
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    }
+  },
+  "skills": {
+    "load": {
+      "extraDirs": ["/Users/pengwang/Documents/GitHub/openclaw-main/extensions-custom/skills"]
+    },
+    "entries": {
+      "notion": {
+        "enabled": true,
+        "apiKey": "${NOTION_API_KEY}"
+      }
+    }
+  },
+  "plugins": {
+    "allow": ["feishu", "device-pair", "lobster-release", "acpx", "google"],
+    "load": {
+      "paths": []
+    },
+    "slots": {
+      "memory": "memory-core"
+    },
+    "entries": {
+      "feishu": {
+        "enabled": true
+      },
+      "lobster-release": {
+        "enabled": true,
+        "config": {
+          "defaultProjectKey": "gamexpert",
+          "defaultEnvironment": "staging",
+          "defaultChannel": "beta",
+          "projects": {
+            "gamexpert": {
+              "name": "GameXpert",
+              "engine": "godot",
+              "defaultEnvironment": "staging",
+              "defaultChannel": "beta",
+              "environments": ["staging", "production"],
+              "channels": ["dev", "beta", "release"],
+              "grayRelease": {
+                "enabled": true,
+                "rolloutPercentages": [5, 10, 25, 50, 100],
+                "stickiness": "account",
+                "monitoring": {
+                  "enabled": true,
+                  "tickCron": "*/5 * * * *",
+                  "minSampleSize": 100,
+                  "minSuccessRate": 0.95,
+                  "maxErrorRate": 0.05,
+                  "maxCrashRate": 0.02,
+                  "autoAdvance": true,
+                  "autoAdvanceAfterMinutes": 0,
+                  "publishOnComplete": true,
+                  "circuitBreakerAction": "pause"
+                }
+              }
+            }
+          },
+          "dbDriver": "postgres",
+          "postgresConnectionString": "${LOBSTER_POSTGRES_CONNECTION_STRING}",
+          "postgresSchema": "${LOBSTER_POSTGRES_SCHEMA}",
+          "routePrefix": "/plugins/lobster-release/api",
+          "ciRoutePrefix": "/api/ci/v1",
+          "notifierSessionKey": "${LOBSTER_NOTIFIER_SESSION_KEY}",
+          "publicBaseUrl": "${LOBSTER_PUBLIC_BASE_URL}",
+          "ciApiKey": "${LOBSTER_CI_API_KEY}",
+          "ciApiSecret": "${LOBSTER_CI_API_SECRET}",
+          "jenkinsBaseUrl": "${LOBSTER_JENKINS_BASE_URL}",
+          "jenkinsJob": "GameXpert_Godot_CI",
+          "jenkinsUser": "${LOBSTER_JENKINS_USER}",
+          "jenkinsApiToken": "${LOBSTER_JENKINS_API_TOKEN}",
+          "jenkinsLobsterApiKeyCredentialsId": "lobster-api-key",
+          "jenkinsLobsterApiSecretCredentialsId": "lobster-api-secret",
+          "jenkinsAndroidKeystoreBase64CredentialsId": "gamexpert-android-keystore-base64",
+          "jenkinsAndroidKeystoreAliasCredentialsId": "gamexpert-android-keystore-alias",
+          "jenkinsAndroidKeystorePasswordCredentialsId": "gamexpert-android-keystore-password",
+          "uploadDestinationDir": "${LOBSTER_UPLOAD_DESTINATION_DIR}",
+          "uploadBaseUrl": "${LOBSTER_UPLOAD_BASE_URL}",
+          "autoPublishDev": true
+        }
+      },
+      "acpx": {
+        "enabled": true,
+        "config": {
+          "permissionMode": "approve-all",
+          "nonInteractivePermissions": "fail"
+        }
+      },
+      "google": {
+        "enabled": true
+      }
+    },
+    "installs": {
+      "lobster-release": {
+        "source": "path",
+        "sourcePath": "/Users/pengwang/lobster-release",
+        "installPath": "/Users/pengwang/.openclaw/extensions/lobster-release",
+        "version": "0.1.0",
+        "installedAt": "2026-03-28T12:50:38.387Z"
+      }
+    }
+  }
+}
