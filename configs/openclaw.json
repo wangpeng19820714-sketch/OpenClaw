@@ -520,13 +520,7 @@
         "enabled": true,
         "config": {
           "permissionMode": "approve-all",
-          "nonInteractivePermissions": "fail",
-          "mcpServers": {
-            "blender": {
-              "command": "/opt/homebrew/bin/uvx",
-              "args": ["blender-mcp"]
-            }
-          }
+          "nonInteractivePermissions": "fail"
         }
       }
     }
