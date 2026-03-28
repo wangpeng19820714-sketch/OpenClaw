@@ -1,7 +1,17 @@
 {
   "meta": {
-    "lastTouchedVersion": "2026.3.2",
-    "lastTouchedAt": "2026-03-11T01:27:21.565Z"
+    "lastTouchedVersion": "2026.3.24",
+    "lastTouchedAt": "2026-03-28T12:50:39.009Z"
+  },
+  "update": {
+    "channel": "stable",
+    "checkOnStart": true,
+    "auto": {
+      "enabled": true,
+      "stableDelayHours": 6,
+      "stableJitterHours": 12,
+      "betaCheckIntervalHours": 1
+    }
   },
   "auth": {
     "profiles": {
@@ -24,6 +34,23 @@
         "google-gemini-cli:wangpeng19820714@gmail.com",
         "google-gemini-cli:default"
       ]
+    }
+  },
+  "acp": {
+    "enabled": true,
+    "dispatch": {
+      "enabled": true
+    },
+    "backend": "acpx",
+    "defaultAgent": "codex",
+    "allowedAgents": ["pi", "claude", "codex", "opencode", "gemini", "kimi"],
+    "maxConcurrentSessions": 4,
+    "stream": {
+      "coalesceIdleMs": 300,
+      "maxChunkChars": 1200
+    },
+    "runtime": {
+      "ttlMinutes": 120
     }
   },
   "agents": {
@@ -343,10 +370,10 @@
     "native": "auto",
     "nativeSkills": "auto",
     "restart": true,
+    "ownerDisplay": "raw",
     "allowFrom": {
       "feishu": ["${FEISHU_MAIN_OWNER_OPEN_ID}"]
-    },
-    "ownerDisplay": "raw"
+    }
   },
   "channels": {
     "feishu": {
@@ -413,36 +440,10 @@
       }
     }
   },
-  "acp": {
-    "enabled": true,
-    "dispatch": {
-      "enabled": true
-    },
-    "backend": "acpx",
-    "defaultAgent": "codex",
-    "allowedAgents": ["pi", "claude", "codex", "opencode", "gemini", "kimi"],
-    "maxConcurrentSessions": 4,
-    "stream": {
-      "coalesceIdleMs": 300,
-      "maxChunkChars": 1200
-    },
-    "runtime": {
-      "ttlMinutes": 120
-    }
-  },
   "plugins": {
     "allow": ["feishu", "google-gemini-cli-auth", "device-pair", "lobster-release", "acpx"],
     "load": {
       "paths": []
-    },
-    "installs": {
-      "lobster-release": {
-        "source": "path",
-        "sourcePath": "/Users/pengwang/lobster-release",
-        "installPath": "/Users/pengwang/.openclaw/extensions/lobster-release",
-        "version": "0.1.0",
-        "installedAt": "2026-03-28T00:48:21.965Z"
-      }
     },
     "slots": {
       "memory": "memory-core"
@@ -516,6 +517,15 @@
           "permissionMode": "approve-all",
           "nonInteractivePermissions": "fail"
         }
+      }
+    },
+    "installs": {
+      "lobster-release": {
+        "source": "path",
+        "sourcePath": "/Users/pengwang/lobster-release",
+        "installPath": "/Users/pengwang/.openclaw/extensions/lobster-release",
+        "version": "0.1.0",
+        "installedAt": "2026-03-28T12:50:38.387Z"
       }
     }
   }
